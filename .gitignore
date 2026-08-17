@@ -1,0 +1,9 @@
+/rbrmp-server
+/rbrmp-server.exe
+/dist/
+*.exe
+*.test
+*.out
+.vscode/
+.idea/
+*.log

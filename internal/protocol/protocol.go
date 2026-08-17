@@ -1,0 +1,347 @@
+// Package protocol is the wire format shared by the server and the game
+// client. It is deliberately a fixed-layout, little-endian binary format with
+// no framing beyond the UDP datagram: the client side is C++ inside a 32-bit
+// game process, and the less it has to parse the better.
+//
+// docs/PROTOCOL.md describes the same thing in prose. Keep the two in step.
+package protocol
+
+import (
+	"encoding/binary"
+	"errors"
+	"math"
+)
+
+// Magic is "ORMP" read little-endian, so it appears as those four ASCII bytes
+// at the start of every datagram.
+const (
+	Magic   uint32 = 0x504D524F
+	Version uint16 = 1
+)
+
+// Message types.
+const (
+	TypeHello    uint16 = 1 // client -> server, once, to join
+	TypeWelcome  uint16 = 2 // server -> client, assigns the player id
+	TypeState    uint16 = 3 // client -> server, every tick
+	TypeSnapshot uint16 = 4 // server -> client, every tick
+	TypeBye      uint16 = 5 // client -> server, on a clean disconnect
+)
+
+// NameLen is the fixed size of every name field, NUL-padded.
+const NameLen = 24
+
+// HeaderSize is the 8 bytes every message starts with.
+const HeaderSize = 8
+
+var (
+	ErrShort   = errors.New("protocol: datagram too short")
+	ErrMagic   = errors.New("protocol: bad magic")
+	ErrVersion = errors.New("protocol: unsupported version")
+)
+
+// Header is the common prefix of every message.
+type Header struct {
+	Magic   uint32
+	Version uint16
+	Type    uint16
+}
+
+// Transform is a car's pose: a world position in metres (Z-up, right-handed)
+// and its orientation as the car's local axes expressed as world direction
+// vectors, one axis per row.
+//
+// The 3x3 is sent verbatim rather than as a quaternion on purpose. It is
+// exactly what the client reads out of the game and exactly what it renders
+// with, so a round trip through this server cannot introduce a conversion bug
+// - which matters when the whole point is to measure the transport.
+type Transform struct {
+	Pos [3]float32
+	Rot [9]float32 // rows: local +X, +Y, +Z as world directions
+}
+
+// Hello joins the session.
+type Hello struct {
+	Name string
+}
+
+// Welcome answers a Hello.
+type Welcome struct {
+	PlayerID     uint32
+	TickRateHz   uint16
+	EchoDelayMs  uint16 // 0 when the echo player is disabled
+	ServerTimeMs uint32
+}
+
+// State is one sample of where a client's car is. ClientTimeMs is the client's
+// own clock: the server never interprets it, it only stores it and hands it
+// back, so the client can measure the true age of anything it receives without
+// the two clocks having to agree.
+type State struct {
+	PlayerID     uint32
+	Seq          uint32
+	ClientTimeMs uint32
+	Transform
+	Speed float32 // m/s, for the panel and for future wheel state
+}
+
+// Entity flags.
+const (
+	// FlagEcho marks the entity as a replay of the receiving client's own car,
+	// delayed by the server. It is not another player.
+	FlagEcho uint16 = 1 << 0
+)
+
+// Entity is one car in a snapshot.
+type Entity struct {
+	ID    uint32
+	Flags uint16
+	_     uint16
+	Name  string // NameLen bytes on the wire
+	Transform
+	Speed float32
+	// SampleTimeMs is the ClientTimeMs of the sample this pose came from.
+	// For an echo entity that is the receiving client's own clock, so
+	// now - SampleTimeMs is the exact end-to-end delay of the loop.
+	SampleTimeMs uint32
+}
+
+// Snapshot is what every client receives each tick.
+type Snapshot struct {
+	ServerTimeMs uint32
+	// LastClientTimeMs is the ClientTimeMs of the most recent State the server
+	// received from this client, echoed back. now - LastClientTimeMs is the
+	// round trip time, measured with one clock and no synchronisation.
+	LastClientTimeMs uint32
+	Entities         []Entity
+}
+
+// EntitySize is the fixed on-the-wire size of one Entity.
+const EntitySize = 4 + 2 + 2 + NameLen + 12 + 36 + 4 + 4
+
+// SnapshotHeaderSize is the snapshot's own header, after the common one.
+const SnapshotHeaderSize = 4 + 4 + 2 + 2
+
+// ---------------------------------------------------------------------------
+// encoding
+
+type writer struct{ b []byte }
+
+func (w *writer) u16(v uint16) { w.b = binary.LittleEndian.AppendUint16(w.b, v) }
+func (w *writer) u32(v uint32) { w.b = binary.LittleEndian.AppendUint32(w.b, v) }
+func (w *writer) f32(v float32) {
+	w.b = binary.LittleEndian.AppendUint32(w.b, math.Float32bits(v))
+}
+
+func (w *writer) name(s string) {
+	var buf [NameLen]byte
+	copy(buf[:], s) // truncates, and leaves the tail NUL
+	if len(s) >= NameLen {
+		buf[NameLen-1] = 0
+	}
+	w.b = append(w.b, buf[:]...)
+}
+
+func (w *writer) transform(t Transform) {
+	for _, v := range t.Pos {
+		w.f32(v)
+	}
+	for _, v := range t.Rot {
+		w.f32(v)
+	}
+}
+
+func (w *writer) header(t uint16) {
+	w.u32(Magic)
+	w.u16(Version)
+	w.u16(t)
+}
+
+type reader struct {
+	b   []byte
+	i   int
+	err error
+}
+
+func (r *reader) need(n int) bool {
+	if r.err != nil {
+		return false
+	}
+	if len(r.b)-r.i < n {
+		r.err = ErrShort
+		return false
+	}
+	return true
+}
+
+func (r *reader) u16() uint16 {
+	if !r.need(2) {
+		return 0
+	}
+	v := binary.LittleEndian.Uint16(r.b[r.i:])
+	r.i += 2
+	return v
+}
+
+func (r *reader) u32() uint32 {
+	if !r.need(4) {
+		return 0
+	}
+	v := binary.LittleEndian.Uint32(r.b[r.i:])
+	r.i += 4
+	return v
+}
+
+func (r *reader) f32() float32 { return math.Float32frombits(r.u32()) }
+
+func (r *reader) name() string {
+	if !r.need(NameLen) {
+		return ""
+	}
+	raw := r.b[r.i : r.i+NameLen]
+	r.i += NameLen
+	for j, c := range raw {
+		if c == 0 {
+			return string(raw[:j])
+		}
+	}
+	return string(raw)
+}
+
+func (r *reader) transform() Transform {
+	var t Transform
+	for j := range t.Pos {
+		t.Pos[j] = r.f32()
+	}
+	for j := range t.Rot {
+		t.Rot[j] = r.f32()
+	}
+	return t
+}
+
+// ParseHeader validates the common prefix and returns the message type.
+func ParseHeader(b []byte) (uint16, error) {
+	if len(b) < HeaderSize {
+		return 0, ErrShort
+	}
+	if binary.LittleEndian.Uint32(b) != Magic {
+		return 0, ErrMagic
+	}
+	if binary.LittleEndian.Uint16(b[4:]) != Version {
+		return 0, ErrVersion
+	}
+	return binary.LittleEndian.Uint16(b[6:]), nil
+}
+
+// EncodeHello builds a Hello datagram.
+func EncodeHello(h Hello) []byte {
+	w := &writer{}
+	w.header(TypeHello)
+	w.name(h.Name)
+	return w.b
+}
+
+// DecodeHello parses a Hello datagram (header included).
+func DecodeHello(b []byte) (Hello, error) {
+	r := &reader{b: b, i: HeaderSize}
+	h := Hello{Name: r.name()}
+	return h, r.err
+}
+
+// EncodeWelcome builds a Welcome datagram.
+func EncodeWelcome(v Welcome) []byte {
+	w := &writer{}
+	w.header(TypeWelcome)
+	w.u32(v.PlayerID)
+	w.u16(v.TickRateHz)
+	w.u16(v.EchoDelayMs)
+	w.u32(v.ServerTimeMs)
+	return w.b
+}
+
+// DecodeWelcome parses a Welcome datagram.
+func DecodeWelcome(b []byte) (Welcome, error) {
+	r := &reader{b: b, i: HeaderSize}
+	v := Welcome{
+		PlayerID:    r.u32(),
+		TickRateHz:  r.u16(),
+		EchoDelayMs: r.u16(),
+	}
+	v.ServerTimeMs = r.u32()
+	return v, r.err
+}
+
+// EncodeState builds a State datagram.
+func EncodeState(s State) []byte {
+	w := &writer{}
+	w.header(TypeState)
+	w.u32(s.PlayerID)
+	w.u32(s.Seq)
+	w.u32(s.ClientTimeMs)
+	w.transform(s.Transform)
+	w.f32(s.Speed)
+	return w.b
+}
+
+// DecodeState parses a State datagram.
+func DecodeState(b []byte) (State, error) {
+	r := &reader{b: b, i: HeaderSize}
+	s := State{
+		PlayerID:     r.u32(),
+		Seq:          r.u32(),
+		ClientTimeMs: r.u32(),
+	}
+	s.Transform = r.transform()
+	s.Speed = r.f32()
+	return s, r.err
+}
+
+// EncodeSnapshot builds a Snapshot datagram.
+func EncodeSnapshot(s Snapshot) []byte {
+	w := &writer{b: make([]byte, 0, HeaderSize+SnapshotHeaderSize+len(s.Entities)*EntitySize)}
+	w.header(TypeSnapshot)
+	w.u32(s.ServerTimeMs)
+	w.u32(s.LastClientTimeMs)
+	w.u16(uint16(len(s.Entities)))
+	w.u16(0) // padding, keeps the entity array 4-byte aligned
+	for _, e := range s.Entities {
+		w.u32(e.ID)
+		w.u16(e.Flags)
+		w.u16(0)
+		w.name(e.Name)
+		w.transform(e.Transform)
+		w.f32(e.Speed)
+		w.u32(e.SampleTimeMs)
+	}
+	return w.b
+}
+
+// DecodeSnapshot parses a Snapshot datagram.
+func DecodeSnapshot(b []byte) (Snapshot, error) {
+	r := &reader{b: b, i: HeaderSize}
+	s := Snapshot{
+		ServerTimeMs:     r.u32(),
+		LastClientTimeMs: r.u32(),
+	}
+	n := int(r.u16())
+	_ = r.u16()
+	if r.err != nil {
+		return s, r.err
+	}
+	s.Entities = make([]Entity, 0, n)
+	for i := 0; i < n; i++ {
+		var e Entity
+		e.ID = r.u32()
+		e.Flags = r.u16()
+		_ = r.u16()
+		e.Name = r.name()
+		e.Transform = r.transform()
+		e.Speed = r.f32()
+		e.SampleTimeMs = r.u32()
+		if r.err != nil {
+			return s, r.err
+		}
+		s.Entities = append(s.Entities, e)
+	}
+	return s, nil
+}
