@@ -24,7 +24,7 @@ func straightLine(base time.Time, n int) *History {
 				Pos: [3]float32{float32(i) * 10.0 / 60.0, 0, 0},
 				Rot: identity(),
 			},
-			Speed: 10,
+			Telemetry: protocol.Telemetry{Speed: 10},
 		})
 	}
 	return h

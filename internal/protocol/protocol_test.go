@@ -50,7 +50,7 @@ func TestParseHeaderRejectsRubbish(t *testing.T) {
 }
 
 func TestHelloRoundTrip(t *testing.T) {
-	in := Hello{Name: "Łukasz"}
+	in := Hello{Name: "Łukasz", Car: "XSARA"}
 	out, err := DecodeHello(EncodeHello(in))
 	if err != nil {
 		t.Fatalf("decode: %v", err)
@@ -58,13 +58,16 @@ func TestHelloRoundTrip(t *testing.T) {
 	if out.Name != in.Name {
 		t.Fatalf("name %q, want %q", out.Name, in.Name)
 	}
+	if out.Car != in.Car {
+		t.Fatalf("car %q, want %q", out.Car, in.Car)
+	}
 }
 
 func TestNameIsTruncatedNotOverflowed(t *testing.T) {
 	long := strings.Repeat("x", NameLen*2)
 	b := EncodeHello(Hello{Name: long})
-	if len(b) != HeaderSize+NameLen {
-		t.Fatalf("datagram is %d bytes, want %d", len(b), HeaderSize+NameLen)
+	if len(b) != HeaderSize+2*NameLen {
+		t.Fatalf("datagram is %d bytes, want %d", len(b), HeaderSize+2*NameLen)
 	}
 	out, err := DecodeHello(b)
 	if err != nil {
@@ -87,13 +90,24 @@ func TestWelcomeRoundTrip(t *testing.T) {
 	}
 }
 
+func sampleTelemetry() Telemetry {
+	return Telemetry{
+		Vel:        [3]float32{27.5, -1.25, 0.5},
+		Speed:      27.5,
+		RPM:        6450,
+		Steer:      -0.35,
+		Gear:       4,
+		WheelOmega: [4]float32{88, 88.5, 91, 90.5},
+	}
+}
+
 func TestStateRoundTrip(t *testing.T) {
 	in := State{
 		PlayerID:     3,
 		Seq:          4242,
 		ClientTimeMs: 999999,
 		Transform:    sampleTransform(),
-		Speed:        27.5,
+		Telemetry:    sampleTelemetry(),
 	}
 	out, err := DecodeState(EncodeState(in))
 	if err != nil {
@@ -109,9 +123,10 @@ func TestSnapshotRoundTrip(t *testing.T) {
 		ServerTimeMs:     5000,
 		LastClientTimeMs: 4321,
 		Entities: []Entity{
-			{ID: 1, Name: "Player 1", Transform: sampleTransform(), Speed: 12, SampleTimeMs: 100},
-			{ID: 1 | 0x8000_0000, Flags: FlagEcho, Name: "Player 1 (echo)",
-				Transform: sampleTransform(), Speed: 12, SampleTimeMs: 50},
+			{ID: 1, Name: "Player 1", Car: "XSARA", Transform: sampleTransform(),
+				Telemetry: sampleTelemetry(), SampleTimeMs: 100},
+			{ID: 1 | 0x8000_0000, Flags: FlagEcho, Name: "Player 1 (echo)", Car: "XSARA",
+				Transform: sampleTransform(), Telemetry: sampleTelemetry(), SampleTimeMs: 50},
 		},
 	}
 	b := EncodeSnapshot(in)

@@ -1,0 +1,12 @@
+.git
+.gitignore
+*.log
+*.exe
+*.test
+*.out
+dist/
+docs/
+README.md
+LICENSE
+docker-compose.yml
+Dockerfile

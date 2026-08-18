@@ -18,7 +18,7 @@ type Sample struct {
 	RecvAt       time.Time
 	ClientTimeMs uint32
 	Transform    protocol.Transform
-	Speed        float32
+	Telemetry    protocol.Telemetry
 }
 
 // History is a bounded, time-ordered ring of samples for one client.
@@ -134,7 +134,23 @@ func lerpSample(a, b Sample, t float32) Sample {
 		out.Transform.Rot[i] = lerp(a.Transform.Rot[i], b.Transform.Rot[i], t)
 	}
 	orthonormalize(&out.Transform.Rot)
-	out.Speed = lerp(a.Speed, b.Speed, t)
+
+	// Continuous quantities interpolate; the gear is a step function and takes
+	// the nearer sample.
+	for i := range out.Telemetry.Vel {
+		out.Telemetry.Vel[i] = lerp(a.Telemetry.Vel[i], b.Telemetry.Vel[i], t)
+	}
+	out.Telemetry.Speed = lerp(a.Telemetry.Speed, b.Telemetry.Speed, t)
+	out.Telemetry.RPM = lerp(a.Telemetry.RPM, b.Telemetry.RPM, t)
+	out.Telemetry.Steer = lerp(a.Telemetry.Steer, b.Telemetry.Steer, t)
+	if t < 0.5 {
+		out.Telemetry.Gear = a.Telemetry.Gear
+	} else {
+		out.Telemetry.Gear = b.Telemetry.Gear
+	}
+	for i := range out.Telemetry.WheelOmega {
+		out.Telemetry.WheelOmega[i] = lerp(a.Telemetry.WheelOmega[i], b.Telemetry.WheelOmega[i], t)
+	}
 	return out
 }
 

@@ -68,7 +68,7 @@ func stateAt(id uint32, seq uint32, clientMs uint32, x float32) protocol.State {
 			Pos: [3]float32{x, 0, 0},
 			Rot: [9]float32{1, 0, 0, 0, 1, 0, 0, 0, 1},
 		},
-		Speed: 10,
+		Telemetry: protocol.Telemetry{Speed: 10},
 	}
 }
 

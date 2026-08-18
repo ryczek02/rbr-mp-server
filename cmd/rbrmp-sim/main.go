@@ -26,12 +26,23 @@ import (
 func main() {
 	addr := flag.String("server", "127.0.0.1:40100", "server address")
 	name := flag.String("name", "sim", "player name")
+	car := flag.String("car", "XSARA", "car folder name announced to the server")
 	rate := flag.Int("rate", 60, "state packets per second")
 	speed := flag.Float64("speed", 20, "m/s the fake car drives at")
 	radius := flag.Float64("radius", 50, "radius of the circle it drives, metres")
+	at := flag.String("at", "0,0,0",
+		"world position the circle starts at, metres, \"x,y,z\" - read your own\n"+
+			"position off the client panel (Debug > Car physics readout) to have\n"+
+			"the fake car drive right where you are standing")
 	run := flag.Duration("for", 0, "stop after this long (0 = until Ctrl-C)")
 	quiet := flag.Bool("q", false, "only print the summary")
 	flag.Parse()
+
+	var origin [3]float32
+	if n, err := fmt.Sscanf(*at, "%f,%f,%f", &origin[0], &origin[1], &origin[2]); n != 3 || err != nil {
+		fmt.Fprintln(os.Stderr, `-at must be "x,y,z", e.g. -at "412.3,-88.1,102.5"`)
+		os.Exit(2)
+	}
 
 	conn, err := net.Dial("udp", *addr)
 	if err != nil {
@@ -40,7 +51,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	if _, err := conn.Write(protocol.EncodeHello(protocol.Hello{Name: *name})); err != nil {
+	if _, err := conn.Write(protocol.EncodeHello(protocol.Hello{Name: *name, Car: *car})); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -94,7 +105,7 @@ func main() {
 						r.echoAgeMs = now - int64(e.SampleTimeMs)
 						// Where we were when that sample was taken, versus
 						// where we are now: the lag expressed as track.
-						nowPos := carAt(time.Since(start), *speed, *radius)
+						nowPos := carAt(time.Since(start), *speed, *radius, origin)
 						r.echoLagM = dist(nowPos, e.Transform.Pos)
 					} else {
 						r.others++
@@ -130,7 +141,7 @@ func main() {
 				return
 			}
 			seq++
-			pos := carAt(time.Since(start), *speed, *radius)
+			pos := carAt(time.Since(start), *speed, *radius, origin)
 			conn.Write(protocol.EncodeState(protocol.State{
 				PlayerID:     playerID,
 				Seq:          seq,
@@ -139,7 +150,7 @@ func main() {
 					Pos: pos,
 					Rot: headingAt(time.Since(start), *speed, *radius),
 				},
-				Speed: float32(*speed),
+				Telemetry: telemetryAt(time.Since(start), *speed, *radius),
 			}))
 
 		case r := <-reports:
@@ -203,17 +214,19 @@ func summarise(totalRtt, totalAge float64, n, echoN int, echoDelay uint16) {
 		echoN, totalAge/float64(echoN), echoDelay)
 }
 
-// carAt is where the fake car is after t: a circle at constant speed, which
-// exercises interpolation far better than a straight line would.
-func carAt(t time.Duration, speed, radius float64) [3]float32 {
+// carAt is where the fake car is after t: a circle at constant speed starting
+// at `origin`, which exercises interpolation far better than a straight line
+// would. Pass the position of a real stage spot via -at and the car drives
+// there, visible from the game.
+func carAt(t time.Duration, speed, radius float64, origin [3]float32) [3]float32 {
 	if radius <= 0 {
-		return [3]float32{float32(speed * t.Seconds()), 0, 0}
+		return [3]float32{origin[0] + float32(speed*t.Seconds()), origin[1], origin[2]}
 	}
 	a := speed * t.Seconds() / radius // radians travelled
 	return [3]float32{
-		float32(radius * math.Sin(a)),
-		float32(radius * (1 - math.Cos(a))),
-		0,
+		origin[0] + float32(radius*math.Sin(a)),
+		origin[1] + float32(radius*(1-math.Cos(a))),
+		origin[2],
 	}
 }
 
@@ -232,6 +245,36 @@ func headingAt(t time.Duration, speed, radius float64) [9]float32 {
 		float32(lx), float32(ly), 0,
 		float32(-fx), float32(-fy), 0,
 		0, 0, 1,
+	}
+}
+
+// telemetryAt fakes the rest of a State so a client can be seen animating:
+// velocity tangent to the circle, wheels rolling at speed/radius, a constant
+// steering hold, and revs that rise and fall so engine audio has something to
+// track.
+func telemetryAt(t time.Duration, speed, radius float64) protocol.Telemetry {
+	const wheelRadius = 0.31 // metres, a typical rally tyre
+	omega := float32(speed / wheelRadius)
+
+	var vx, vy float64
+	if radius <= 0 {
+		vx, vy = speed, 0
+	} else {
+		a := speed * t.Seconds() / radius
+		vx, vy = speed*math.Cos(a), speed*math.Sin(a)
+	}
+
+	steer := float32(0)
+	if radius > 0 {
+		steer = -0.25 // holding a constant left turn
+	}
+	return protocol.Telemetry{
+		Vel:        [3]float32{float32(vx), float32(vy), 0},
+		Speed:      float32(speed),
+		RPM:        float32(4500 + 1500*math.Sin(t.Seconds()*2)),
+		Steer:      steer,
+		Gear:       4,
+		WheelOmega: [4]float32{omega, omega, omega, omega},
 	}
 }
 

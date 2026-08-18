@@ -1,20 +1,71 @@
 # RBR-MP-Server
 
-The server half of a multiplayer mod for **Richard Burns Rally**: a small UDP
-relay in Go that passes car poses between players — and, because testing
-multiplayer alone is otherwise impossible, **replays each player back to
-themselves on a delay**.
+<p>
+  <em>The server half of a multiplayer mod for <strong>Richard Burns Rally</strong>:
+  a small, dependency-free UDP relay in Go.</em>
+</p>
 
-Drive for a second and a second car appears beside you, doing exactly what you
-just did. That is the whole point: you can see and measure the latency, the
-interpolation and how a remote car actually looks on a stage, with one machine
-and one copy of the game.
+It passes car state between players — pose, velocity, engine RPM, steering and
+wheel speeds, and which car everyone drives — and, because testing multiplayer
+alone is otherwise impossible, it can **replay each player back to themselves
+on a delay**. Drive for a second and a second car appears beside you, doing
+exactly what you just did: latency, interpolation and how a remote car actually
+looks on a stage, all measurable with one machine and one copy of the game.
 
 The client is a separate project: [RBR-MP-Client](../RBR-MP-Client) — a DLL
-injected into the game that renders the other cars in its own 3D scene.
+injected into the game that renders the other cars inside its own 3D scene,
+wheels turning, shadows on the ground and engines audible where the cars are.
 
-It is a hobby project, not affiliated with or endorsed by the Richard Burns
-Rally team or RallySimFans.
+> A hobby project, not affiliated with or endorsed by the Richard Burns Rally
+> team or RallySimFans.
+
+---
+
+## Quick start
+
+```bash
+go build ./cmd/rbrmp-server
+./rbrmp-server                # listens on UDP :40100, echo 1 s behind
+```
+
+Or with Docker, one command:
+
+```bash
+docker compose up -d
+```
+
+Open **UDP** port 40100 on the firewall — not TCP.
+
+## Configuration
+
+Everything is a flag; there is no config file to manage.
+
+```
+Usage of rbrmp-server:
+  -addr string      UDP address to listen on (default ":40100")
+  -tick int         snapshots per second sent to each client (default 30)
+  -echo duration    replay each client to itself this far behind,
+                    0 disables the echo player (default 1s)
+  -timeout duration drop a client silent for this long (default 5s)
+  -stats duration   how often to print a traffic line, 0 = never (default 10s)
+  -v                log malformed datagrams and send errors
+```
+
+Cross-compiling for a Linux box:
+
+```bash
+GOOS=linux GOARCH=amd64 go build -o rbrmp-server ./cmd/rbrmp-server
+```
+
+## Deployment
+
+* **[Dockerfile](Dockerfile)** — multi-stage build ending on `scratch`: a
+  single static binary, a few megabytes, nothing to patch, runs as non-root.
+* **[docker-compose.yml](docker-compose.yml)** — one-command deployment with
+  the UDP port mapped, a memory cap, a read-only filesystem and all
+  capabilities dropped. Tune the server through its `command:` line.
+* **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — the longer walkthrough:
+  VPS setup, firewall, running it under systemd instead, and what to monitor.
 
 ## Design
 
@@ -34,38 +85,17 @@ their own clock; the server stores that number, drives everything off its own
 receive clock, and hands the client's number back untouched. Each side can then
 measure real latency using only the clock it owns.
 
-## Build and run
-
-Go 1.21 or newer, no dependencies outside the standard library.
-
-```
-go build ./cmd/rbrmp-server
-./rbrmp-server
-```
-
-```
-Usage of rbrmp-server:
-  -addr string      UDP address to listen on (default ":40100")
-  -tick int         snapshots per second sent to each client (default 30)
-  -echo duration    replay each client to itself this far behind,
-                    0 disables the echo player (default 1s)
-  -timeout duration drop a client silent for this long (default 5s)
-  -stats duration   how often to print a traffic line, 0 = never (default 10s)
-  -v                log malformed datagrams and send errors
-```
-
-Cross-compiling for a Linux box:
-
-```
-GOOS=linux GOARCH=amd64 go build -o rbrmp-server ./cmd/rbrmp-server
-```
-
-Open **UDP** port 40100 — not TCP.
+**Dumb wire, smart edges.** The protocol is fixed-layout little-endian UDP with
+no reliability layer: state is continuous, so a lost packet is simply replaced
+by the next one. Interpolation, extrapolation and animation are the client's
+job; the server only relays and replays.
 
 ## Measuring the delay without the game
 
-`cmd/rbrmp-sim` is a fake client. It drives a circle, sends it exactly like the
-mod does, and reports what comes back:
+`cmd/rbrmp-sim` is a fake client. It drives a circle, sends full v2 telemetry
+exactly like the mod does (wheels turning, revs rising and falling — so a real
+client's animation and audio can be tested against it), and reports what comes
+back:
 
 ```
 $ ./rbrmp-server -echo 1s -tick 60 &
@@ -73,7 +103,6 @@ $ ./rbrmp-sim -for 5s
 joined as player 1; server echo delay is 1000 ms
 round trip 8.7 ms over 60 snapshots   echo: not visible yet
 round trip 8.7 ms over 60 snapshots   echo 1001 ms behind (19.9 m of track)
-round trip 8.6 ms over 60 snapshots   echo 1001 ms behind (19.9 m of track)
 
 300 snapshots: average round trip 8.6 ms
 239 of them carried the echo: average age 1001 ms (server was set to 1000 ms)
@@ -88,8 +117,8 @@ Two numbers matter there:
   client's own clock. It should land on the configured delay; if it drifts
   above it, something in the chain is running late.
 
-`-rate`, `-speed` and `-radius` change what the fake car does. Several
-instances can run at once to simulate a field of cars.
+`-rate`, `-speed`, `-radius` and `-car` change what the fake car does and
+claims to be. Several instances can run at once to simulate a field of cars.
 
 ## How the echo works
 
@@ -106,6 +135,8 @@ Two details that are easy to get wrong and are covered by tests:
 * **Interpolating a rotation component-wise does not produce a rotation** — the
   result is slightly shrunk and skewed, and a car drawn with it would look
   subtly squashed. The result is re-orthonormalised with Gram-Schmidt.
+  (Continuous telemetry is interpolated too; the gear, being a step function,
+  takes the nearer sample.)
 
 Before the buffer reaches back far enough — the first `delay` after joining —
 there is no echo entity at all, so the ghost appears a delay after you start
@@ -113,16 +144,28 @@ rather than sitting at the origin.
 
 ## Protocol
 
-Fixed-layout little-endian UDP, documented in
+Version 2: fixed-layout little-endian UDP, documented field-by-field in
 **[docs/PROTOCOL.md](docs/PROTOCOL.md)**. The reference implementation is
-`internal/protocol`, which the client mirrors in C++.
+`internal/protocol`, mirrored by the client's `src/net_protocol.cpp`.
 
-A state packet is 72 bytes: about 4.3 kB/s per client at 60 Hz. A snapshot is
-20 bytes plus 88 per entity.
+A state packet is 112 bytes — about 6.7 kB/s per client at 60 Hz. A snapshot is
+20 bytes plus 152 per entity. Version 2 added car identity and a telemetry
+block (velocity, RPM, steering, gear, per-wheel angular velocity); version 1
+carried pose and speed only.
+
+## Repository layout
+
+```
+cmd/rbrmp-server/   the binary: flags, signals, wiring
+cmd/rbrmp-sim/      fake game client for testing and measurement
+internal/protocol/  the wire format: encode/decode, no I/O
+internal/server/    the relay: session handling, tick loop, echo history
+docs/               PROTOCOL.md, DEPLOYMENT.md
+```
 
 ## Tests
 
-```
+```bash
 go test ./...
 ```
 
@@ -138,16 +181,13 @@ it are set before a client is published into the map.
 
 ## Status and roadmap
 
-Working: joining, relaying between any number of players, the delayed echo,
-timeouts, traffic stats, the simulator.
+Working: joining, relaying between any number of players, car identity, full
+telemetry pass-through (wheels, RPM, steering, gear, velocity), the delayed
+echo, timeouts, traffic stats, the simulator, Docker deployment.
 
 Not done yet:
 
-- [ ] Which car each player drives — everyone currently renders as whatever
-      model the client picked
 - [ ] Stage identity, so players only see others on the same stage
-- [ ] Wheel state (steering and spin) so remote wheels do not inherit the
-      viewer's
 - [ ] Spectator mode
 - [ ] A server list, so sessions can be found rather than typed in
 - [ ] Load testing — the tick loop builds and sends one snapshot per client

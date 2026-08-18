@@ -1,0 +1,31 @@
+# RBR-MP-Server - one-command deployment.
+#
+#   docker compose up -d
+#
+# The server speaks UDP only; make sure the host firewall lets 40100/udp in.
+# Tuning happens through `command` below - every flag of the binary works:
+#
+#   -addr :40100     UDP address to listen on
+#   -tick 30         snapshots per second sent to each client
+#   -echo 1s         replay each client to itself this far behind (0 = off)
+#   -timeout 5s      drop a client silent for this long
+#   -stats 10s       traffic summary interval (0 = never)
+#   -v               log malformed datagrams and send errors
+
+services:
+  rbrmp-server:
+    build: .
+    image: rbrmp-server:latest
+    container_name: rbrmp-server
+    command: ["-addr", ":40100", "-tick", "30", "-echo", "0", "-stats", "60s"]
+    ports:
+      - "40100:40100/udp"
+    restart: unless-stopped
+    # The server holds no state worth persisting and needs nothing writable.
+    read_only: true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 128M

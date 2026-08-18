@@ -37,6 +37,7 @@ func DefaultConfig() Config {
 type client struct {
 	id       uint32
 	name     string
+	car      string // Cars\<folder> the player drives; empty until a Hello says
 	addr     *net.UDPAddr
 	addrKey  string
 	joinedAt time.Time
@@ -143,7 +144,7 @@ func (s *Server) handle(b []byte, addr *net.UDPAddr, now time.Time) {
 		if err != nil {
 			return
 		}
-		s.join(addr, h.Name, now)
+		s.join(addr, h, now)
 
 	case protocol.TypeState:
 		st, err := protocol.DecodeState(b)
@@ -198,10 +199,20 @@ func (s *Server) sendWelcome(c *client, now time.Time) {
 	}))
 }
 
-func (s *Server) join(addr *net.UDPAddr, name string, now time.Time) {
+func (s *Server) join(addr *net.UDPAddr, h protocol.Hello, now time.Time) {
 	s.mu.Lock()
-	c, _ := s.clientLocked(addr, name, now)
+	c, created := s.clientLocked(addr, h.Name, now)
 	c.lastSeen = now
+	// A repeated Hello is how a client announces a name or car change.
+	if h.Name != "" && h.Name != c.name {
+		c.name = h.Name
+	}
+	if h.Car != c.car {
+		c.car = h.Car
+		if !created && h.Car != "" {
+			s.log.Printf("player %d (%s) is driving %s", c.id, c.name, c.car)
+		}
+	}
 	s.mu.Unlock()
 	s.sendWelcome(c, now)
 }
@@ -244,7 +255,7 @@ func (s *Server) state(addr *net.UDPAddr, st protocol.State, now time.Time) {
 			RecvAt:       now,
 			ClientTimeMs: st.ClientTimeMs,
 			Transform:    st.Transform,
-			Speed:        st.Speed,
+			Telemetry:    st.Telemetry,
 		})
 	}
 	s.mu.Unlock()
@@ -303,8 +314,9 @@ func (s *Server) tick(now time.Time) {
 				entities = append(entities, protocol.Entity{
 					ID:           other.id,
 					Name:         other.name,
+					Car:          other.car,
 					Transform:    sample.Transform,
-					Speed:        sample.Speed,
+					Telemetry:    sample.Telemetry,
 					SampleTimeMs: sample.ClientTimeMs,
 				})
 			}
@@ -321,8 +333,9 @@ func (s *Server) tick(now time.Time) {
 					ID:           me.id | 0x8000_0000,
 					Flags:        protocol.FlagEcho,
 					Name:         echoName(me.name),
+					Car:          me.car,
 					Transform:    sample.Transform,
-					Speed:        sample.Speed,
+					Telemetry:    sample.Telemetry,
 					SampleTimeMs: sample.ClientTimeMs,
 				})
 			}

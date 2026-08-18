@@ -16,7 +16,7 @@ import (
 // at the start of every datagram.
 const (
 	Magic   uint32 = 0x504D524F
-	Version uint16 = 1
+	Version uint16 = 2
 )
 
 // Message types.
@@ -28,7 +28,8 @@ const (
 	TypeBye      uint16 = 5 // client -> server, on a clean disconnect
 )
 
-// NameLen is the fixed size of every name field, NUL-padded.
+// NameLen is the fixed size of every name field, NUL-padded. Car identity
+// (the game's Cars\<folder> name) uses the same size.
 const NameLen = 24
 
 // HeaderSize is the 8 bytes every message starts with.
@@ -60,9 +61,35 @@ type Transform struct {
 	Rot [9]float32 // rows: local +X, +Y, +Z as world directions
 }
 
-// Hello joins the session.
+// Wheel slots, the order every per-wheel array uses.
+const (
+	WheelLF = 0
+	WheelRF = 1
+	WheelLB = 2
+	WheelRB = 3
+)
+
+// Telemetry is what a car is doing, beyond where it is. It exists so remote
+// cars can be animated (wheels spinning and steering, engine audio pitched by
+// RPM) and extrapolated (velocity-based dead reckoning) instead of gliding
+// statues snapped to the last received pose.
+type Telemetry struct {
+	Vel        [3]float32 // world velocity, m/s - drives extrapolation
+	Speed      float32    // m/s
+	RPM        float32    // engine speed
+	Steer      float32    // steering input, -1..+1, positive = right
+	Gear       int32      // 0 = reverse, 1 = neutral, 2.. = 1st..
+	WheelOmega [4]float32 // wheel angular velocity, rad/s, LF RF LB RB
+}
+
+// TelemetrySize is the fixed on-the-wire size of a Telemetry.
+const TelemetrySize = 12 + 4 + 4 + 4 + 4 + 16
+
+// Hello joins the session. Safe to repeat - the client re-sends it when its
+// car changes, and the server answers every one with a Welcome.
 type Hello struct {
 	Name string
+	Car  string // Cars\<folder> the player drives; may be empty
 }
 
 // Welcome answers a Hello.
@@ -73,16 +100,16 @@ type Welcome struct {
 	ServerTimeMs uint32
 }
 
-// State is one sample of where a client's car is. ClientTimeMs is the client's
-// own clock: the server never interprets it, it only stores it and hands it
-// back, so the client can measure the true age of anything it receives without
-// the two clocks having to agree.
+// State is one sample of what a client's car is doing. ClientTimeMs is the
+// client's own clock: the server never interprets it, it only stores it and
+// hands it back, so the client can measure the true age of anything it
+// receives without the two clocks having to agree.
 type State struct {
 	PlayerID     uint32
 	Seq          uint32
 	ClientTimeMs uint32
 	Transform
-	Speed float32 // m/s, for the panel and for future wheel state
+	Telemetry
 }
 
 // Entity flags.
@@ -98,13 +125,20 @@ type Entity struct {
 	Flags uint16
 	_     uint16
 	Name  string // NameLen bytes on the wire
+	Car   string // NameLen bytes on the wire; empty = unknown
 	Transform
-	Speed float32
+	Telemetry
 	// SampleTimeMs is the ClientTimeMs of the sample this pose came from.
 	// For an echo entity that is the receiving client's own clock, so
 	// now - SampleTimeMs is the exact end-to-end delay of the loop.
 	SampleTimeMs uint32
 }
+
+// EntitySize is the fixed on-the-wire size of one Entity.
+const EntitySize = 4 + 2 + 2 + NameLen + NameLen + 48 + TelemetrySize + 4
+
+// SnapshotHeaderSize is the snapshot's own header, after the common one.
+const SnapshotHeaderSize = 4 + 4 + 2 + 2
 
 // Snapshot is what every client receives each tick.
 type Snapshot struct {
@@ -116,12 +150,6 @@ type Snapshot struct {
 	Entities         []Entity
 }
 
-// EntitySize is the fixed on-the-wire size of one Entity.
-const EntitySize = 4 + 2 + 2 + NameLen + 12 + 36 + 4 + 4
-
-// SnapshotHeaderSize is the snapshot's own header, after the common one.
-const SnapshotHeaderSize = 4 + 4 + 2 + 2
-
 // ---------------------------------------------------------------------------
 // encoding
 
@@ -129,6 +157,7 @@ type writer struct{ b []byte }
 
 func (w *writer) u16(v uint16) { w.b = binary.LittleEndian.AppendUint16(w.b, v) }
 func (w *writer) u32(v uint32) { w.b = binary.LittleEndian.AppendUint32(w.b, v) }
+func (w *writer) i32(v int32)  { w.u32(uint32(v)) }
 func (w *writer) f32(v float32) {
 	w.b = binary.LittleEndian.AppendUint32(w.b, math.Float32bits(v))
 }
@@ -147,6 +176,19 @@ func (w *writer) transform(t Transform) {
 		w.f32(v)
 	}
 	for _, v := range t.Rot {
+		w.f32(v)
+	}
+}
+
+func (w *writer) telemetry(t Telemetry) {
+	for _, v := range t.Vel {
+		w.f32(v)
+	}
+	w.f32(t.Speed)
+	w.f32(t.RPM)
+	w.f32(t.Steer)
+	w.i32(t.Gear)
+	for _, v := range t.WheelOmega {
 		w.f32(v)
 	}
 }
@@ -192,6 +234,7 @@ func (r *reader) u32() uint32 {
 	return v
 }
 
+func (r *reader) i32() int32   { return int32(r.u32()) }
 func (r *reader) f32() float32 { return math.Float32frombits(r.u32()) }
 
 func (r *reader) name() string {
@@ -219,6 +262,21 @@ func (r *reader) transform() Transform {
 	return t
 }
 
+func (r *reader) telemetry() Telemetry {
+	var t Telemetry
+	for j := range t.Vel {
+		t.Vel[j] = r.f32()
+	}
+	t.Speed = r.f32()
+	t.RPM = r.f32()
+	t.Steer = r.f32()
+	t.Gear = r.i32()
+	for j := range t.WheelOmega {
+		t.WheelOmega[j] = r.f32()
+	}
+	return t
+}
+
 // ParseHeader validates the common prefix and returns the message type.
 func ParseHeader(b []byte) (uint16, error) {
 	if len(b) < HeaderSize {
@@ -238,13 +296,14 @@ func EncodeHello(h Hello) []byte {
 	w := &writer{}
 	w.header(TypeHello)
 	w.name(h.Name)
+	w.name(h.Car)
 	return w.b
 }
 
 // DecodeHello parses a Hello datagram (header included).
 func DecodeHello(b []byte) (Hello, error) {
 	r := &reader{b: b, i: HeaderSize}
-	h := Hello{Name: r.name()}
+	h := Hello{Name: r.name(), Car: r.name()}
 	return h, r.err
 }
 
@@ -279,7 +338,7 @@ func EncodeState(s State) []byte {
 	w.u32(s.Seq)
 	w.u32(s.ClientTimeMs)
 	w.transform(s.Transform)
-	w.f32(s.Speed)
+	w.telemetry(s.Telemetry)
 	return w.b
 }
 
@@ -292,7 +351,7 @@ func DecodeState(b []byte) (State, error) {
 		ClientTimeMs: r.u32(),
 	}
 	s.Transform = r.transform()
-	s.Speed = r.f32()
+	s.Telemetry = r.telemetry()
 	return s, r.err
 }
 
@@ -309,8 +368,9 @@ func EncodeSnapshot(s Snapshot) []byte {
 		w.u16(e.Flags)
 		w.u16(0)
 		w.name(e.Name)
+		w.name(e.Car)
 		w.transform(e.Transform)
-		w.f32(e.Speed)
+		w.telemetry(e.Telemetry)
 		w.u32(e.SampleTimeMs)
 	}
 	return w.b
@@ -335,8 +395,9 @@ func DecodeSnapshot(b []byte) (Snapshot, error) {
 		e.Flags = r.u16()
 		_ = r.u16()
 		e.Name = r.name()
+		e.Car = r.name()
 		e.Transform = r.transform()
-		e.Speed = r.f32()
+		e.Telemetry = r.telemetry()
 		e.SampleTimeMs = r.u32()
 		if r.err != nil {
 			return s, r.err

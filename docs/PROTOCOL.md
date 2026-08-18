@@ -1,4 +1,4 @@
-# RBR-MP wire protocol, version 1
+# RBR-MP wire protocol, version 2
 
 UDP, little-endian, fixed layout, one message per datagram. There is no framing
 beyond the datagram itself and no reliability layer: state is sent continuously,
@@ -7,8 +7,24 @@ so a lost packet is replaced by the next one a few milliseconds later.
 The layout is deliberately dull. The other end is C++ inside a 32-bit game
 process, and the less parsing it has to do per frame the better.
 
-`internal/protocol/protocol.go` is the implementation; if the two ever disagree,
-the code is right and this document is stale.
+`internal/protocol/protocol.go` is the implementation (mirrored by the client's
+`src/net_protocol.cpp`); if they ever disagree with this document, the code is
+right and this document is stale.
+
+## What changed since version 1
+
+Version 2 exists so a remote car can be a *car* instead of a gliding statue:
+
+* **Car identity** — `Hello` and every `Entity` carry the `Cars\<folder>` name
+  the player drives, so each remote player is drawn in their actual car.
+* **Telemetry** — `State` and `Entity` carry a 44-byte telemetry block:
+  world velocity (drives dead-reckoning extrapolation on the receiving side),
+  speed, engine RPM (drives positional engine audio), steering input and the
+  four wheels' angular velocities (drive wheel steer/spin animation), and the
+  gear.
+
+A version-1 datagram is rejected by a version-2 peer and vice versa; both sides
+show "nothing arrives", which is the correct failure for a lockstep format.
 
 ## Common header
 
@@ -17,7 +33,7 @@ Every datagram starts with 8 bytes:
 | Offset | Type | Field | Value |
 |---|---|---|---|
 | 0 | `u32` | magic | `0x504D524F`, which reads as `ORMP` in a hex dump |
-| 4 | `u16` | version | `1` |
+| 4 | `u16` | version | `2` |
 | 6 | `u16` | type | see below |
 
 | Type | Name | Direction |
@@ -33,7 +49,7 @@ A datagram with the wrong magic or version is dropped without a reply.
 ## Shared types
 
 **Name** — 24 bytes, NUL-padded. Anything longer is truncated and still
-NUL-terminated.
+NUL-terminated. Car identity fields use the same layout.
 
 **Transform** — 48 bytes: a position and an orientation.
 
@@ -45,23 +61,39 @@ NUL-terminated.
 Coordinates are **metres, Z-up, right-handed** — RBR's own physics frame,
 unconverted. The orientation is the car's local axes as world direction
 vectors, one axis per row: row 0 is local +X (left), row 1 local +Y
-(backwards; forward is −Y), row 2 local +Z (up). The car's origin is the rear
-axle at ground level.
+(backwards; forward is −Y), row 2 local +Z (up). The position is the car's
+**centre of mass** (what RBR's telemetry publishes).
 
 The orientation is sent as a 3×3 rather than a quaternion on purpose: it is
 exactly what the client reads out of the game and exactly what it renders with,
-so a round trip through the server cannot introduce a conversion error. That
-matters when the point of the exercise is to measure the transport itself.
+so a round trip through the server cannot introduce a conversion error.
+
+**Telemetry** — 44 bytes: what the car is doing.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | `f32[3]` | world velocity, m/s |
+| 12 | `f32` | speed, m/s |
+| 16 | `f32` | engine RPM |
+| 20 | `f32` | steering input, −1..+1, positive = right |
+| 24 | `i32` | gear: 0 = reverse, 1 = neutral, 2.. = 1st.. |
+| 28 | `f32[4]` | wheel angular velocity, rad/s, order **LF RF LB RB** |
+
+The server never interprets any of it; it interpolates the continuous fields
+for the echo replay (the gear steps to the nearer sample) and passes everything
+through.
 
 ## Hello (1) — client → server
 
 | Offset | Type | Field |
 |---|---|---|
-| 8 | `char[24]` | name |
+| 8 | `char[24]` | player name |
+| 32 | `char[24]` | car: the `Cars\<folder>` name, may be empty |
 
 Sent on connect and safe to repeat; the server answers every one with a
-Welcome. A client that only ever sends State is registered anyway, so a server
-restart does not require the client to do anything.
+Welcome. A repeated Hello is also how the client announces a name or car
+change. A client that only ever sends State is registered anyway (with no car),
+so a server restart does not require the client to do anything.
 
 ## Welcome (2) — server → client
 
@@ -80,9 +112,9 @@ restart does not require the client to do anything.
 | 12 | `u32` | sequence number, incrementing |
 | 16 | `u32` | client time, ms |
 | 20 | `Transform` | pose |
-| 68 | `f32` | speed, m/s |
+| 68 | `Telemetry` | telemetry |
 
-72 bytes. At 60 Hz that is about 4.3 kB/s per client upstream, before UDP and
+112 bytes. At 60 Hz that is about 6.7 kB/s per client upstream, before UDP and
 IP headers.
 
 **Sequence number.** UDP reorders, and a sample older than the newest one held
@@ -111,7 +143,7 @@ sat waiting for the next server tick, and the trip back. On a LAN the tick wait
 is the largest part of it — at 30 Hz it averages ~17 ms — so this number is
 "how stale the server's picture of me is", not a ping.
 
-### Entity — 88 bytes each
+### Entity — 152 bytes each
 
 | Offset | Type | Field |
 |---|---|---|
@@ -119,9 +151,10 @@ is the largest part of it — at 30 Hz it averages ~17 ms — so this number is
 | 4 | `u16` | flags |
 | 6 | `u16` | padding |
 | 8 | `char[24]` | name |
-| 32 | `Transform` | pose |
-| 80 | `f32` | speed, m/s |
-| 84 | `u32` | the client time of the sample this pose came from |
+| 32 | `char[24]` | car; empty = unknown, the receiver picks a fallback model |
+| 56 | `Transform` | pose |
+| 104 | `Telemetry` | telemetry |
+| 148 | `u32` | the client time of the sample this pose came from |
 
 | Flag | Meaning |
 |---|---|
@@ -143,9 +176,9 @@ A client never appears in its own snapshot as a normal entity.
 Header only. The server forgets the client immediately; without it, the client
 is dropped after the timeout (5 s by default).
 
-## Not in version 1
+## Not in version 2
 
-Which car each player drives (everyone is rendered with whatever model the
-client picked), stage identity, wheel state, damage, lap and timing data,
-reliability or ordering for anything, and any form of authentication. The
-version field exists so these can be added without guessing.
+Stage identity (you see every player on the server, whichever stage they are
+on), damage, lap and timing data, chat, reliability or ordering for anything,
+and any form of authentication. The version field exists so these can be added
+without guessing.
