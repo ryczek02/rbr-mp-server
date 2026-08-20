@@ -35,7 +35,7 @@ Tune the server by editing the `command:` line in
 [docker-compose.yml](../docker-compose.yml):
 
 ```yaml
-command: ["-addr", ":40100", "-tick", "60", "-echo", "1s", "-stats", "60s"]
+command: ["-addr", ":40100", "-tick", "60", "-stats", "60s"]
 ```
 
 Logs and health:
@@ -64,7 +64,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/rbrmp-server -addr :40100 -tick 30 -echo 0 -stats 60s
+ExecStart=/usr/local/bin/rbrmp-server -addr :40100 -tick 30 -stats 60s
 Restart=always
 User=nobody
 DynamicUser=yes
@@ -124,18 +124,14 @@ the provider's firewall still closed for UDP.
 go run ./cmd/rbrmp-sim -server your.host:40100 -for 5s
 ```
 
-A healthy public server shows a round trip of your internet latency plus half a
-tick interval, and (with the echo enabled) an echo age within a few ms of the
-configured delay.
+A healthy public server shows a round trip of your internet latency plus half
+a tick interval. Run two sims at once to see them relay each other.
 
 ## Operational notes
 
 * **Stats**: with `-stats 60s` the log carries one line per minute — client
   count, packets and kB/s each way. That plus join/leave/timeout lines is the
   whole observability story, by design.
-* **The echo player** (`-echo`) is a testing aid. For a real session between
-  friends run `-echo 0`; anyone who wants the ghost for solo practice can run
-  their own server locally.
 * **Scaling**: snapshots are built per client per tick, so traffic grows with
   the square of the player count. At rally-sized sessions (a handful of cars)
   this is nothing; a 50-car server is untested territory.

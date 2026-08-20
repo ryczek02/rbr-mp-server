@@ -17,7 +17,7 @@
     rbrmp_arch: linux-amd64          # or linux-arm64 once released
     rbrmp_port: 40100
     # Every flag the binary takes; -addr is derived from rbrmp_port.
-    rbrmp_flags: "-tick 30 -echo 0 -stats 60s"
+    rbrmp_flags: "-tick 30 -stats 60s"
     # Set false if the host has no ufw or the firewall is managed elsewhere.
     rbrmp_manage_ufw: true
     # Auto-update: a systemd timer checks GitHub Releases and swaps the binary

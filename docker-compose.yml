@@ -7,7 +7,6 @@
 #
 #   -addr :40100     UDP address to listen on
 #   -tick 30         snapshots per second sent to each client
-#   -echo 1s         replay each client to itself this far behind (0 = off)
 #   -timeout 5s      drop a client silent for this long
 #   -stats 10s       traffic summary interval (0 = never)
 #   -v               log malformed datagrams and send errors
@@ -17,7 +16,7 @@ services:
     build: .
     image: rbrmp-server:latest
     container_name: rbrmp-server
-    command: ["-addr", ":40100", "-tick", "30", "-echo", "0", "-stats", "60s"]
+    command: ["-addr", ":40100", "-tick", "30", "-stats", "60s"]
     ports:
       # 0.0.0.0 = every interface of the host: 127.0.0.1 for local tools AND
       # the machine's LAN address, so other PCs on the same network can join.

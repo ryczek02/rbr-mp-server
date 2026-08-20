@@ -188,7 +188,7 @@ func main() {
 			if echoSamples > 0 {
 				line += fmt.Sprintf("   echo %.0f ms behind (%.1f m of track)",
 					sumAge/float64(echoSamples), sumLag/float64(echoSamples))
-			} else {
+			} else if echoDelay > 0 {
 				line += "   echo: not visible yet"
 			}
 			fmt.Println(line)
@@ -204,7 +204,9 @@ func summarise(totalRtt, totalAge float64, n, echoN int, echoDelay uint16) {
 	}
 	fmt.Printf("\n%d snapshots: average round trip %.1f ms\n", n, totalRtt/float64(n))
 	if echoN == 0 {
-		fmt.Println("the echo never appeared - run for longer than the echo delay")
+		if echoDelay > 0 {
+			fmt.Println("the echo never appeared - run for longer than the echo delay")
+		}
 		return
 	}
 	// Averaged over the snapshots that HAD an echo. Dividing by every snapshot

@@ -101,7 +101,7 @@ so a server restart does not require the client to do anything.
 |---|---|---|
 | 8 | `u32` | player id, ≥ 1 |
 | 12 | `u16` | snapshot tick rate, Hz |
-| 14 | `u16` | echo delay, ms (`0` = the echo player is off) |
+| 14 | `u16` | echo delay, ms — always `0` since the echo player was removed; the field stays for wire compatibility |
 | 16 | `u32` | server uptime, ms |
 
 ## State (3) — client → server

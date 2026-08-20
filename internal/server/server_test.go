@@ -3,7 +3,6 @@ package server
 import (
 	"io"
 	"log"
-	"math"
 	"net"
 	"testing"
 	"time"
@@ -73,7 +72,7 @@ func stateAt(id uint32, seq uint32, clientMs uint32, x float32) protocol.State {
 }
 
 func TestHelloGetsWelcome(t *testing.T) {
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: 200 * time.Millisecond,
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond,
 		Timeout: time.Second})
 	defer stop()
 	conn := dial(t, srv)
@@ -96,102 +95,15 @@ func TestHelloGetsWelcome(t *testing.T) {
 	if w.PlayerID == 0 {
 		t.Error("player id 0 was handed out; ids should start at 1")
 	}
-	if w.EchoDelayMs != 200 {
-		t.Errorf("welcome says echo is %d ms, want 200", w.EchoDelayMs)
-	}
 	if w.TickRateHz != 100 {
 		t.Errorf("welcome says %d Hz, want 100", w.TickRateHz)
 	}
 }
 
-// The behaviour the whole server exists for: drive, and a second car appears
-// doing what you did, exactly `echo` ago.
-func TestEchoReplaysTheClientOnADelay(t *testing.T) {
-	const echo = 300 * time.Millisecond
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: echo, Timeout: 2 * time.Second})
-	defer stop()
-	conn := dial(t, srv)
-
-	conn.Write(protocol.EncodeHello(protocol.Hello{Name: "tester"}))
-
-	// Drive in a straight line at 10 m/s, sending at 100 Hz.
-	const rate = 10 * time.Millisecond
-	const speed = 10.0
-	start := time.Now()
-	var seq uint32
-	var sawEcho bool
-
-	for time.Since(start) < echo+700*time.Millisecond {
-		elapsed := time.Since(start)
-		x := float32(speed * elapsed.Seconds())
-		seq++
-		conn.Write(protocol.EncodeState(stateAt(1, seq, uint32(elapsed.Milliseconds()), x)))
-
-		s, ok := readSnapshot(t, conn, rate)
-		if !ok {
-			continue
-		}
-		for _, e := range s.Entities {
-			if e.Flags&protocol.FlagEcho == 0 {
-				continue
-			}
-			sawEcho = true
-
-			// Only judge once the history definitely covers the delay.
-			if time.Since(start) < echo+300*time.Millisecond {
-				continue
-			}
-			nowX := float32(speed * time.Since(start).Seconds())
-			behind := nowX - e.Transform.Pos[0]
-			wantBehind := float32(speed * echo.Seconds())
-			if math.Abs(float64(behind-wantBehind)) > 1.0 {
-				t.Fatalf("echo is %.2f m behind, want about %.2f m (%.0f ms at %v m/s)",
-					behind, wantBehind, echo.Seconds()*1000, speed)
-			}
-
-			// The age it reports must match the delay too, since that is the
-			// number the client puts on screen.
-			age := int64(time.Since(start).Milliseconds()) - int64(e.SampleTimeMs)
-			if age < echo.Milliseconds()-100 || age > echo.Milliseconds()+250 {
-				t.Fatalf("echo sample is %d ms old, want about %d ms",
-					age, echo.Milliseconds())
-			}
-			if e.ID&0x8000_0000 == 0 {
-				t.Errorf("echo id %#x should have the high bit set", e.ID)
-			}
-		}
-	}
-	if !sawEcho {
-		t.Fatal("no echo entity ever arrived")
-	}
-}
-
-func TestNoEchoBeforeTheDelayHasElapsed(t *testing.T) {
-	const echo = 800 * time.Millisecond
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: echo, Timeout: 2 * time.Second})
-	defer stop()
-	conn := dial(t, srv)
-
-	conn.Write(protocol.EncodeHello(protocol.Hello{Name: "tester"}))
-
-	start := time.Now()
-	var seq uint32
-	for time.Since(start) < 300*time.Millisecond {
-		seq++
-		conn.Write(protocol.EncodeState(stateAt(1, seq, uint32(time.Since(start).Milliseconds()), 0)))
-		if s, ok := readSnapshot(t, conn, 10*time.Millisecond); ok {
-			for _, e := range s.Entities {
-				if e.Flags&protocol.FlagEcho != 0 {
-					t.Fatalf("an echo appeared after %v, before the %v delay had passed",
-						time.Since(start), echo)
-				}
-			}
-		}
-	}
-}
-
-func TestEchoCanBeDisabled(t *testing.T) {
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: 0, Timeout: 2 * time.Second})
+// A lone player gets empty snapshots: there is no echo player, and nobody
+// else to relay.
+func TestLonePlayerGetsNoEntities(t *testing.T) {
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: 2 * time.Second})
 	defer stop()
 	conn := dial(t, srv)
 
@@ -203,16 +115,15 @@ func TestEchoCanBeDisabled(t *testing.T) {
 		conn.Write(protocol.EncodeState(stateAt(1, seq, uint32(time.Since(start).Milliseconds()), 0)))
 		if s, ok := readSnapshot(t, conn, 10*time.Millisecond); ok {
 			if len(s.Entities) != 0 {
-				t.Fatalf("got %d entities with the echo off, want none", len(s.Entities))
+				t.Fatalf("got %d entities for a lone player, want none", len(s.Entities))
 			}
 		}
 	}
 }
 
-// Two real clients must see each other - the echo is a testing aid, not the
-// only thing the server can do.
+// Two real clients must see each other.
 func TestTwoClientsSeeEachOther(t *testing.T) {
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: 0, Timeout: 2 * time.Second})
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: 2 * time.Second})
 	defer stop()
 	a, b := dial(t, srv), dial(t, srv)
 
@@ -243,7 +154,7 @@ func TestTwoClientsSeeEachOther(t *testing.T) {
 }
 
 func TestClientTimeIsEchoedForRttMeasurement(t *testing.T) {
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: 0, Timeout: 2 * time.Second})
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: 2 * time.Second})
 	defer stop()
 	conn := dial(t, srv)
 
@@ -263,7 +174,7 @@ func TestClientTimeIsEchoedForRttMeasurement(t *testing.T) {
 
 func TestSilentClientIsDropped(t *testing.T) {
 	const timeout = 200 * time.Millisecond
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: 0, Timeout: timeout})
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: timeout})
 	defer stop()
 	conn := dial(t, srv)
 
@@ -288,7 +199,7 @@ func TestSilentClientIsDropped(t *testing.T) {
 }
 
 func TestStateWithoutHelloStillRegisters(t *testing.T) {
-	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Echo: 0, Timeout: time.Second})
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: time.Second})
 	defer stop()
 	conn := dial(t, srv)
 

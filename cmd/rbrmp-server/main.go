@@ -5,9 +5,7 @@
 // back to itself on a delay, so one person driving alone sees a second car
 // doing exactly what they did a second ago.
 //
-//	rbrmp-server                     listen on :40100, echo one second behind
-//	rbrmp-server -echo 3s            a longer delay
-//	rbrmp-server -echo 0             plain relay, no echo player
+//	rbrmp-server                     listen on :40100
 //	rbrmp-server -addr :7777 -v      another port, log every oddity
 package main
 
@@ -30,8 +28,6 @@ func main() {
 
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "UDP address to listen on")
 	tickHz := flag.Int("tick", 30, "snapshots per second sent to each client")
-	flag.DurationVar(&cfg.Echo, "echo", cfg.Echo,
-		"replay each client to itself this far behind (0 disables the echo player)")
 	flag.DurationVar(&cfg.Timeout, "timeout", cfg.Timeout, "drop a client silent for this long")
 	flag.DurationVar(&cfg.Stale, "stale", cfg.Stale,
 		"stop relaying a player whose newest state is older than this")

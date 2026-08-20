@@ -25,7 +25,7 @@ wheels turning, shadows on the ground and engines audible where the cars are.
 
 ```bash
 go build ./cmd/rbrmp-server
-./rbrmp-server                # listens on UDP :40100, echo 1 s behind
+./rbrmp-server                # listens on UDP :40100
 ```
 
 Or with Docker, one command:
@@ -44,8 +44,6 @@ Everything is a flag; there is no config file to manage.
 Usage of rbrmp-server:
   -addr string      UDP address to listen on (default ":40100")
   -tick int         snapshots per second sent to each client (default 30)
-  -echo duration    replay each client to itself this far behind,
-                    0 disables the echo player (default 1s)
   -timeout duration drop a client silent for this long (default 5s)
   -stale duration   stop relaying a player whose newest state is older
                     than this, so others despawn him quickly (default 2s)
@@ -106,49 +104,21 @@ client's animation and audio can be tested against it), and reports what comes
 back:
 
 ```
-$ ./rbrmp-server -echo 1s -tick 60 &
+$ ./rbrmp-server -tick 60 &
 $ ./rbrmp-sim -for 5s
-joined as player 1; server echo delay is 1000 ms
-round trip 8.7 ms over 60 snapshots   echo: not visible yet
-round trip 8.7 ms over 60 snapshots   echo 1001 ms behind (19.9 m of track)
+joined as player 1
+round trip 8.7 ms over 60 snapshots
 
 300 snapshots: average round trip 8.6 ms
-239 of them carried the echo: average age 1001 ms (server was set to 1000 ms)
 ```
 
-Two numbers matter there:
-
-* **round trip** — how stale the server's picture of you is. It is the trip out,
-  plus however long your state waited for the next server tick, plus the trip
-  back. On loopback the tick wait is most of it, so this is not a ping.
-* **echo age** — the true end-to-end delay of the whole loop, measured on the
-  client's own clock. It should land on the configured delay; if it drifts
-  above it, something in the chain is running late.
+**round trip** is how stale the server's picture of you is: the trip out, plus
+however long your state waited for the next server tick, plus the trip back.
+On loopback the tick wait is most of it, so this is not a ping.
 
 `-rate`, `-speed`, `-radius` and `-car` change what the fake car does and
-claims to be. Several instances can run at once to simulate a field of cars.
-
-## How the echo works
-
-Each client's samples go into a time-ordered ring buffer, tagged with the
-server's own receive time. Every tick, the server asks that buffer where the
-car was at `now − delay` and sends the answer back as an extra entity flagged
-as an echo.
-
-Two details that are easy to get wrong and are covered by tests:
-
-* **It interpolates between the two samples bracketing that moment** rather than
-  picking the nearest one. Snapping to samples would add a frame of jitter on
-  top of the delay being measured, which rather defeats the purpose.
-* **Interpolating a rotation component-wise does not produce a rotation** — the
-  result is slightly shrunk and skewed, and a car drawn with it would look
-  subtly squashed. The result is re-orthonormalised with Gram-Schmidt.
-  (Continuous telemetry is interpolated too; the gear, being a step function,
-  takes the nearer sample.)
-
-Before the buffer reaches back far enough — the first `delay` after joining —
-there is no echo entity at all, so the ghost appears a delay after you start
-rather than sitting at the origin.
+claims to be. Several instances can run at once to simulate a field of cars —
+which is also how to test with company but no second machine.
 
 ## Protocol
 
@@ -167,7 +137,7 @@ carried pose and speed only.
 cmd/rbrmp-server/   the binary: flags, signals, wiring
 cmd/rbrmp-sim/      fake game client for testing and measurement
 internal/protocol/  the wire format: encode/decode, no I/O
-internal/server/    the relay: session handling, tick loop, echo history
+internal/server/    the relay: session handling, tick loop, pose history
 docs/               INSTALL.md, PROTOCOL.md, DEPLOYMENT.md
 ```
 
@@ -178,9 +148,8 @@ go test ./...
 ```
 
 The protocol tests are round trips and truncation checks. The server tests
-stand up a real server on a real socket and drive it over UDP, including the
-one that matters: send a straight line at a known speed, and check the echo
-comes back the right distance behind, with the right reported age.
+stand up a real server on a real socket and drive it over UDP: joining,
+relaying between clients, timeouts, and RTT measurement.
 
 `go test -race` needs cgo and a C compiler; it has not been run on the machine
 this was written on, so the concurrency has been reviewed by hand rather than
@@ -190,8 +159,8 @@ it are set before a client is published into the map.
 ## Status and roadmap
 
 Working: joining, relaying between any number of players, car identity, full
-telemetry pass-through (wheels, RPM, steering, gear, velocity), the delayed
-echo, timeouts, traffic stats, the simulator, Docker deployment.
+telemetry pass-through (wheels, RPM, steering, gear, velocity), timeouts,
+traffic stats, the simulator, Docker deployment.
 
 Not done yet:
 
