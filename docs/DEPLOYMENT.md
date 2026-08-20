@@ -107,6 +107,37 @@ Flags live in `rbrmp_flags`, the port in `rbrmp_port`, and
 Needs the `community.general` collection for the ufw task
 (`ansible-galaxy collection install community.general`).
 
+By default (`rbrmp_auto_update: true`) the playbook also installs a systemd
+timer (`rbrmp-update.timer`, every `rbrmp_update_every`, default `5min`) that
+independently checks GitHub Releases on the **server itself** and swaps the
+binary in when a new one appears — on top of whatever version you pinned with
+`ansible-playbook ... -e rbrmp_version=...`. It does a plain unauthenticated
+`curl` against `.../releases/latest/download/...`, which only succeeds if the
+repository is public; against a private repo (the current state of this repo)
+the timer will fail every run. Set `rbrmp_auto_update: false` until either the
+repo goes public or the update script is given credentials, or rely on
+Option 4 below instead.
+
+## Option 4 — automatic, via CI on every release tag
+
+[.github/workflows/release.yml](../.github/workflows/release.yml) has a
+`deploy` job that runs after every `v*` tag build: it downloads the fresh
+`rbrmp-server-linux-amd64` binary with `gh release download`, `scp`s it to a
+VPS over SSH, and does the same `/opt/rbrmp/rbrmp-server-<version>` +
+symlink + `systemctl restart rbrmp-server` dance as the Ansible playbook above
+— so both target the same host layout and only one should be managing a given
+server. It needs three repository secrets set (Settings → Secrets and
+variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_SSH_KEY` | private key for a user allowed to `scp` and run the `sudo mv/ln/systemctl` commands |
+| `DEPLOY_HOST` | the VPS hostname or IP |
+| `DEPLOY_USER` | the SSH user on the VPS |
+
+Once those are set, `git tag vX.Y.Z && git push --tags` is the entire deploy:
+build, publish the release, ship the binary, restart the service.
+
 ## Firewall
 
 The one rule everyone forgets: the port is **UDP**, not TCP.
