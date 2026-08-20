@@ -25,10 +25,8 @@ from a terminal:
 rbrmp-server-windows-amd64.exe
 ```
 
-That is a complete server: it listens on **UDP port 40100**, sends 30
-snapshots per second, and — because you are probably alone while testing —
-replays you back to yourself one second behind, so a ghost of your own car
-appears next to you as soon as you drive.
+That is a complete server: it listens on **UDP port 40100** and sends 30
+snapshots per second to everyone connected.
 
 The first launch will pop the Windows Defender Firewall dialog; allow access
 (private networks is enough for LAN play). Keep the window open — closing it
@@ -40,17 +38,9 @@ Useful flags:
 ```
 -addr string      UDP address to listen on (default ":40100")
 -tick int         snapshots per second sent to each client (default 30)
--echo duration    replay each client to itself this far behind,
-                  0 disables the echo player (default 1s)
 -timeout duration drop a client silent for this long (default 5s)
 -stats duration   how often to print a traffic line, 0 = never (default 10s)
 -v                log malformed datagrams and send errors
-```
-
-Playing with real people rather than your own echo:
-
-```
-rbrmp-server-windows-amd64.exe -echo 0
 ```
 
 ## 2. Install the client
@@ -71,8 +61,10 @@ by itself at startup; there is no injector or launcher to run.
 2. Open the RBR-MP panel in game (Multiplayer tab).
 3. The server address defaults to `127.0.0.1:40100` — correct for a server on
    the same PC. Type a name and tick **Connect**.
-4. Load a stage and drive. With the default `-echo 1s` your own car replays
-   beside you a second behind; that means the whole chain works.
+4. Load a stage and drive. Testing alone? `rbrmp-sim` from the server
+   release simulates another player driving a circle around the start —
+   run `rbrmp-sim-windows-amd64.exe` on the same PC and its car should
+   appear on your stage.
 
 ## Running the server on macOS (Docker)
 
@@ -106,8 +98,7 @@ docker compose down
 ```
 
 Tuning goes through the `command:` line in `docker-compose.yml` (all the flags
-above); the checked-in default is `-echo 0` for real sessions — switch it to
-`-echo 1s` while testing alone, then `docker compose up -d` again to apply.
+above); after editing it, `docker compose up -d` again to apply.
 
 ## Playing over LAN
 
@@ -119,9 +110,6 @@ connect to that PC:
 2. The host makes sure **UDP 40100** is allowed inbound in Windows Defender
    Firewall (the dialog from step 1 usually already did this).
 3. Everyone else enters `192.168.1.23:40100` in the panel and connects.
-
-The host usually starts with `-echo 0` — echo ghosts of every player get
-crowded fast.
 
 ## Playing over the internet from home
 
@@ -142,4 +130,4 @@ instead, which is exactly what [DEPLOYMENT.md](DEPLOYMENT.md) covers.
 * **Ghost appears but stutters** — look at the server's stats output and the
   Debug tab in the panel; packet loss on Wi-Fi is the usual suspect.
 * **Two copies of RBR on one PC** does not work for testing — the game
-  refuses to run twice. That is what the server's `-echo` mode is for.
+  refuses to run twice. Use `rbrmp-sim` as the second player instead.

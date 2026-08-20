@@ -17,7 +17,6 @@ import (
 type Config struct {
 	Addr    string        // ":40100"
 	TickAt  time.Duration // how often snapshots go out
-	Echo    time.Duration // replay each client to itself this far behind; 0 = off
 	Timeout time.Duration // drop a client that has gone quiet this long
 	Stale   time.Duration // stop relaying a player whose state is older than this
 	Verbose bool
@@ -29,7 +28,6 @@ func DefaultConfig() Config {
 	return Config{
 		Addr:    ":40100",
 		TickAt:  time.Second / 30,
-		Echo:    time.Second,
 		Timeout: 5 * time.Second,
 		Stale:   2 * time.Second,
 		Stats:   10 * time.Second,
@@ -110,8 +108,8 @@ func (s *Server) Close() error { return s.conn.Close() }
 // Run serves until the connection is closed. It is not expected to return
 // otherwise.
 func (s *Server) Run() error {
-	s.log.Printf("listening on %s, tick %v, echo %v, timeout %v",
-		s.conn.LocalAddr(), s.cfg.TickAt, s.cfg.Echo, s.cfg.Timeout)
+	s.log.Printf("listening on %s, tick %v, timeout %v",
+		s.conn.LocalAddr(), s.cfg.TickAt, s.cfg.Timeout)
 
 	done := make(chan struct{})
 	go s.tickLoop(done)
@@ -185,9 +183,9 @@ func (s *Server) clientLocked(addr *net.UDPAddr, name string, now time.Time) (*c
 		addr:     addr,
 		addrKey:  key,
 		joinedAt: now,
-		// Room for the echo delay plus a healthy margin, so a late tick still
-		// finds both samples it needs to interpolate.
-		history: NewHistory(s.cfg.Echo + 3*time.Second),
+		// A healthy margin of history, so a late tick still finds the
+		// samples it needs.
+		history: NewHistory(3 * time.Second),
 	}
 	s.nextID++
 	s.clients[key] = c
@@ -199,7 +197,7 @@ func (s *Server) sendWelcome(c *client, now time.Time) {
 	s.send(c.addr, protocol.EncodeWelcome(protocol.Welcome{
 		PlayerID:     c.id,
 		TickRateHz:   uint16(time.Second / s.cfg.TickAt),
-		EchoDelayMs:  uint16(s.cfg.Echo.Milliseconds()),
+		EchoDelayMs:  0, // the field stays for wire compatibility; the echo player is gone
 		ServerTimeMs: s.uptimeMs(now),
 	}))
 }
@@ -242,7 +240,7 @@ func (s *Server) state(addr *net.UDPAddr, st protocol.State, now time.Time) {
 			// A huge jump backwards is a client that restarted and began its
 			// sequence again. Its old timeline is meaningless now.
 			s.log.Printf("player %d (%s) restarted its sequence, history cleared", c.id, c.name)
-			c.history = NewHistory(s.cfg.Echo + 3*time.Second)
+			c.history = NewHistory(3 * time.Second)
 		default:
 			// UDP reordered a datagram. Inserting a sample older than the
 			// newest held would corrupt the replay timeline, so drop it; the
@@ -334,24 +332,6 @@ func (s *Server) tick(now time.Time) {
 			}
 		}
 
-		// The echo: this client's own car as it was `Echo` ago. Nothing is sent
-		// until the history actually reaches back that far, so the ghost
-		// appears one delay after joining rather than sitting at the origin.
-		if s.cfg.Echo > 0 {
-			if sample, ok := me.history.At(now.Add(-s.cfg.Echo)); ok {
-				entities = append(entities, protocol.Entity{
-					// High bit set: an echo id can never collide with a real
-					// player id, so a client can key on it safely.
-					ID:           me.id | 0x8000_0000,
-					Flags:        protocol.FlagEcho,
-					Name:         echoName(me.name),
-					Car:          me.car,
-					Transform:    sample.Transform,
-					Telemetry:    sample.Telemetry,
-					SampleTimeMs: sample.ClientTimeMs,
-				})
-			}
-		}
 
 		data := protocol.EncodeSnapshot(protocol.Snapshot{
 			ServerTimeMs:     s.uptimeMs(now),
@@ -367,13 +347,6 @@ func (s *Server) tick(now time.Time) {
 	}
 }
 
-func echoName(name string) string {
-	const suffix = " (echo)"
-	if len(name)+len(suffix) >= protocol.NameLen {
-		name = name[:protocol.NameLen-len(suffix)-1]
-	}
-	return name + suffix
-}
 
 func (s *Server) send(addr *net.UDPAddr, b []byte) {
 	n, err := s.conn.WriteToUDP(b, addr)
