@@ -18,7 +18,7 @@ Any 1-vCPU VPS is far more than enough.
 ## Option 1 — Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/lukaszryczko/rbr-mp-server
+git clone https://github.com/ryczek02/rbr-mp-server
 cd rbr-mp-server
 docker compose up -d
 ```
