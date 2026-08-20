@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Update RBR-MP-Server to the latest release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rbrmp/update.sh

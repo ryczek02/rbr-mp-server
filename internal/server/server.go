@@ -19,6 +19,7 @@ type Config struct {
 	TickAt  time.Duration // how often snapshots go out
 	Echo    time.Duration // replay each client to itself this far behind; 0 = off
 	Timeout time.Duration // drop a client that has gone quiet this long
+	Stale   time.Duration // stop relaying a player whose state is older than this
 	Verbose bool
 	Stats   time.Duration // how often to print a line; 0 = never
 }
@@ -30,6 +31,7 @@ func DefaultConfig() Config {
 		TickAt:  time.Second / 30,
 		Echo:    time.Second,
 		Timeout: 5 * time.Second,
+		Stale:   2 * time.Second,
 		Stats:   10 * time.Second,
 	}
 }
@@ -76,6 +78,9 @@ func New(cfg Config, logger *log.Logger) (*Server, error) {
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second
+	}
+	if cfg.Stale <= 0 {
+		cfg.Stale = 2 * time.Second
 	}
 	addr, err := net.ResolveUDPAddr("udp", cfg.Addr)
 	if err != nil {
@@ -308,6 +313,13 @@ func (s *Server) tick(now time.Time) {
 		// Every other player, at their most recent known pose.
 		for _, other := range live {
 			if other.id == me.id {
+				continue
+			}
+			// A player who stopped sending is not worth relaying: the others
+			// would draw a frozen car for the whole Timeout window. Dropping
+			// them from snapshots early is what lets clients despawn quickly;
+			// the full Timeout still governs forgetting the session itself.
+			if now.Sub(other.lastSeen) > s.cfg.Stale {
 				continue
 			}
 			if sample, ok := other.history.Latest(); ok {

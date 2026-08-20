@@ -33,6 +33,8 @@ func main() {
 	flag.DurationVar(&cfg.Echo, "echo", cfg.Echo,
 		"replay each client to itself this far behind (0 disables the echo player)")
 	flag.DurationVar(&cfg.Timeout, "timeout", cfg.Timeout, "drop a client silent for this long")
+	flag.DurationVar(&cfg.Stale, "stale", cfg.Stale,
+		"stop relaying a player whose newest state is older than this")
 	flag.DurationVar(&cfg.Stats, "stats", cfg.Stats, "how often to print a traffic line (0 = never)")
 	flag.BoolVar(&cfg.Verbose, "v", false, "log malformed datagrams and send errors")
 	flag.Parse()
