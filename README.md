@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="logo.svg" alt="RBR-MP-Server logo" width="200">
-</p>
+<img src="logo.svg" alt="RBR-MP-Server logo" width="100%">
 
 # RBR-MP-Server
 
