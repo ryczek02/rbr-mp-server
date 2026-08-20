@@ -8,11 +8,9 @@
 </p>
 
 It passes car state between players — pose, velocity, engine RPM, steering and
-wheel speeds, and which car everyone drives — and, because testing multiplayer
-alone is otherwise impossible, it can **replay each player back to themselves
-on a delay**. Drive for a second and a second car appears beside you, doing
-exactly what you just did: latency, interpolation and how a remote car actually
-looks on a stage, all measurable with one machine and one copy of the game.
+wheel speeds, and which car everyone drives — at a fixed tick rate over plain
+UDP, with no authority and no physics: each client owns its own car and the
+server only relays.
 
 The client is a separate project: [RBR-MP-Client](../RBR-MP-Client) — a DLL
 injected into the game that renders the other cars inside its own 3D scene,
@@ -74,6 +72,9 @@ GOOS=linux GOARCH=amd64 go build -o rbrmp-server ./cmd/rbrmp-server
   capabilities dropped. Tune the server through its `command:` line.
 * **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — the longer walkthrough:
   VPS setup, firewall, running it under systemd instead, and what to monitor.
+* Every `v*` tag also triggers CI to build the release binaries and, on the
+  server's own VPS, download and restart the service automatically — see
+  [.github/workflows/release.yml](.github/workflows/release.yml).
 
 ## Design
 
@@ -102,8 +103,8 @@ job; the server only relays and replays.
 
 `cmd/rbrmp-sim` is a fake client. It drives a circle, sends full v2 telemetry
 exactly like the mod does (wheels turning, revs rising and falling — so a real
-client's animation and audio can be tested against it), and reports what comes
-back:
+client's animation and audio can be tested against it), and reports the round
+trip the server hands back in every snapshot:
 
 ```
 $ ./rbrmp-server -tick 60 &
@@ -117,6 +118,13 @@ round trip 8.7 ms over 60 snapshots
 **round trip** is how stale the server's picture of you is: the trip out, plus
 however long your state waited for the next server tick, plus the trip back.
 On loopback the tick wait is most of it, so this is not a ping.
+
+There is no self-echo/replay player — an earlier version of the server fed
+each client's own state back to it on a delay so the loop could be watched
+with one machine, but it added enough complexity for what it bought that it
+was removed (`Welcome.EchoDelayMs` still exists on the wire and is always `0`,
+kept only so old and new peers don't reject each other's handshake). To see a
+second car without a second PC, run a second `rbrmp-sim` instead.
 
 `-rate`, `-speed`, `-radius` and `-car` change what the fake car does and
 claims to be. Several instances can run at once to simulate a field of cars —

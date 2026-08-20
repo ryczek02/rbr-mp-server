@@ -35,7 +35,7 @@ Tune the server by editing the `command:` line in
 [docker-compose.yml](../docker-compose.yml):
 
 ```yaml
-command: ["-addr", ":40100", "-tick", "60", "-stats", "60s"]
+command: ["-addr", ":40100", "-tick", "60", "-stale", "2s", "-stats", "60s"]
 ```
 
 Logs and health:
@@ -64,7 +64,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/rbrmp-server -addr :40100 -tick 30 -stats 60s
+ExecStart=/usr/local/bin/rbrmp-server -addr :40100 -tick 30 -stale 2s -stats 60s
 Restart=always
 User=nobody
 DynamicUser=yes

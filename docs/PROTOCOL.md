@@ -79,9 +79,8 @@ so a round trip through the server cannot introduce a conversion error.
 | 24 | `i32` | gear: 0 = reverse, 1 = neutral, 2.. = 1st.. |
 | 28 | `f32[4]` | wheel angular velocity, rad/s, order **LF RF LB RB** |
 
-The server never interprets any of it; it interpolates the continuous fields
-for the echo replay (the gear steps to the nearer sample) and passes everything
-through.
+The server never interprets any of it; it stores the newest sample per client
+and passes it straight through to everyone else's next snapshot.
 
 ## Hello (1) — client → server
 
@@ -158,18 +157,20 @@ is the largest part of it — at 30 Hz it averages ~17 ms — so this number is
 
 | Flag | Meaning |
 |---|---|
-| `0x0001` | echo: this is the receiving client's own car, replayed on a delay — not another player |
+| `0x0001` | echo — reserved, unused by the reference server (see below) |
 
-An echo entity's **id has the high bit set** (`id = player id | 0x80000000`), so
-it can never collide with a real player's id.
+The echo flag and the id-high-bit scheme it implies (`id = player id \|
+0x80000000`, so an echo entity could never collide with a real player's id)
+are wire-format leftovers from a self-echo/replay feature: the server used to
+feed each client's own state back to it on a delay, so the whole loop —
+latency, interpolation, how a remote car actually looks — could be measured
+and watched with one machine. It was removed for being more complexity than
+it was worth (see `internal/server/server.go`, which never sets `FlagEcho`);
+`Welcome.EchoDelayMs` is hard-coded to `0` for the same reason. The flag bit
+stays defined, unused, so the version field doesn't have to bump again if a
+similar feature comes back.
 
-An echo entity's **sample time is on the receiving client's own clock**, so
-`now − sample time` is the exact end-to-end delay of the whole loop: the
-configured delay, plus the round trip, plus however long the server's tick and
-the client's frame took to line up. That single number is what makes this
-measurable rather than a feeling.
-
-A client never appears in its own snapshot as a normal entity.
+A client never appears in its own snapshot.
 
 ## Bye (5) — client → server
 
