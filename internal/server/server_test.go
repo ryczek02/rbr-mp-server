@@ -153,6 +153,89 @@ func TestTwoClientsSeeEachOther(t *testing.T) {
 	t.Fatal("alice never saw bob")
 }
 
+// readChat waits for the next chat line, ignoring anything else.
+func readChat(t *testing.T, conn *net.UDPConn, within time.Duration) (protocol.Chat, bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	buf := make([]byte, 4096)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(deadline)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return protocol.Chat{}, false
+		}
+		msgType, err := protocol.ParseHeader(buf[:n])
+		if err != nil || msgType != protocol.TypeChat {
+			continue
+		}
+		c, err := protocol.DecodeChat(buf[:n])
+		if err != nil {
+			t.Fatalf("decode chat: %v", err)
+		}
+		return c, true
+	}
+	return protocol.Chat{}, false
+}
+
+// A chat line reaches everyone - the sender included - stamped with the
+// SERVER's identity for the sender, whatever the datagram claimed.
+func TestChatIsRebroadcastToEveryoneWithServerIdentity(t *testing.T) {
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: 2 * time.Second})
+	defer stop()
+	a, b := dial(t, srv), dial(t, srv)
+
+	a.Write(protocol.EncodeHello(protocol.Hello{Name: "alice"}))
+	b.Write(protocol.EncodeHello(protocol.Hello{Name: "bob"}))
+	time.Sleep(50 * time.Millisecond)
+
+	// Alice lies about who she is; the server must not repeat the lie.
+	a.Write(protocol.EncodeChat(protocol.Chat{PlayerID: 999, Name: "mallory", Text: "hello stage"}))
+
+	for _, tc := range []struct {
+		who  string
+		conn *net.UDPConn
+	}{{"bob", b}, {"alice (sender)", a}} {
+		c, ok := readChat(t, tc.conn, 2*time.Second)
+		if !ok {
+			t.Fatalf("%s never received the chat line", tc.who)
+		}
+		if c.Text != "hello stage" {
+			t.Fatalf("%s got text %q, want %q", tc.who, c.Text, "hello stage")
+		}
+		if c.Name != "alice" || c.PlayerID != 1 {
+			t.Fatalf("%s got identity %d/%q, want 1/alice (server-stamped)", tc.who, c.PlayerID, c.Name)
+		}
+	}
+}
+
+// The flood guard: a burst collapses to what fits under one line per 300 ms.
+func TestChatIsRateLimited(t *testing.T) {
+	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: 2 * time.Second})
+	defer stop()
+	a, b := dial(t, srv), dial(t, srv)
+
+	a.Write(protocol.EncodeHello(protocol.Hello{Name: "alice"}))
+	b.Write(protocol.EncodeHello(protocol.Hello{Name: "bob"}))
+	time.Sleep(50 * time.Millisecond)
+
+	for i := 0; i < 10; i++ {
+		a.Write(protocol.EncodeChat(protocol.Chat{Text: "spam"}))
+	}
+	got := 0
+	for {
+		if _, ok := readChat(t, b, 400*time.Millisecond); !ok {
+			break
+		}
+		got++
+	}
+	if got > 2 {
+		t.Fatalf("a 10-line burst delivered %d lines, want at most 2", got)
+	}
+	if got == 0 {
+		t.Fatal("the burst delivered nothing; the first line should pass")
+	}
+}
+
 func TestClientTimeIsEchoedForRttMeasurement(t *testing.T) {
 	srv, stop := start(t, Config{TickAt: 10 * time.Millisecond, Timeout: 2 * time.Second})
 	defer stop()

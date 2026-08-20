@@ -49,6 +49,8 @@ type client struct {
 	lastSeq          uint32
 	packets          uint64
 	dropped          uint64 // States that arrived out of order
+
+	lastChat time.Time // flood guard: one line per 300 ms per client
 }
 
 // Server is a running instance. Use New then Run.
@@ -155,6 +157,13 @@ func (s *Server) handle(b []byte, addr *net.UDPAddr, now time.Time) {
 			return
 		}
 		s.state(addr, st, now)
+
+	case protocol.TypeChat:
+		ch, err := protocol.DecodeChat(b)
+		if err != nil {
+			return
+		}
+		s.chat(addr, ch, now)
 
 	case protocol.TypeBye:
 		s.mu.Lock()
@@ -265,6 +274,42 @@ func (s *Server) state(addr *net.UDPAddr, st protocol.State, now time.Time) {
 
 	if created {
 		s.sendWelcome(c, now)
+	}
+}
+
+// chat rebroadcasts one line of text to every connected client, the sender
+// included - a message "arrives" for its author the same way it does for
+// everyone else, so the client needs no local echo path. Identity comes from
+// the session, never from the datagram: whatever id/name the sender claimed
+// is overwritten before anyone hears it.
+func (s *Server) chat(addr *net.UDPAddr, ch protocol.Chat, now time.Time) {
+	if ch.Text == "" {
+		return
+	}
+
+	type outgoing struct {
+		addr *net.UDPAddr
+		data []byte
+	}
+	var out []outgoing
+
+	s.mu.Lock()
+	c, ok := s.clients[addr.String()]
+	if !ok || now.Sub(c.lastChat) < 300*time.Millisecond {
+		s.mu.Unlock()
+		return // no session, or typing faster than any human: drop it
+	}
+	c.lastChat = now
+	c.lastSeen = now
+	data := protocol.EncodeChat(protocol.Chat{PlayerID: c.id, Name: c.name, Text: ch.Text})
+	for _, other := range s.clients {
+		out = append(out, outgoing{addr: other.addr, data: data})
+	}
+	s.log.Printf("chat %d (%s): %s", c.id, c.name, ch.Text)
+	s.mu.Unlock()
+
+	for _, o := range out {
+		s.send(o.addr, o.data)
 	}
 }
 

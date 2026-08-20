@@ -79,6 +79,36 @@ func TestNameIsTruncatedNotOverflowed(t *testing.T) {
 	}
 }
 
+func TestChatRoundTrip(t *testing.T) {
+	in := Chat{PlayerID: 3, Name: "Łukasz", Text: "gg, see you at the split"}
+	out, err := DecodeChat(EncodeChat(in))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out != in {
+		t.Fatalf("got %+v, want %+v", out, in)
+	}
+	if got, want := len(EncodeChat(in)), HeaderSize+4+NameLen+ChatTextLen; got != want {
+		t.Fatalf("datagram is %d bytes, want %d", got, want)
+	}
+}
+
+func TestChatTextIsTruncatedNotOverflowed(t *testing.T) {
+	long := strings.Repeat("y", ChatTextLen*2)
+	b := EncodeChat(Chat{Text: long})
+	if len(b) != HeaderSize+4+NameLen+ChatTextLen {
+		t.Fatalf("datagram is %d bytes, want %d", len(b), HeaderSize+4+NameLen+ChatTextLen)
+	}
+	out, err := DecodeChat(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Text) >= ChatTextLen {
+		t.Fatalf("text came back %d bytes, must be NUL-terminated within %d",
+			len(out.Text), ChatTextLen)
+	}
+}
+
 func TestWelcomeRoundTrip(t *testing.T) {
 	in := Welcome{PlayerID: 7, TickRateHz: 30, EchoDelayMs: 1000, ServerTimeMs: 123456}
 	out, err := DecodeWelcome(EncodeWelcome(in))

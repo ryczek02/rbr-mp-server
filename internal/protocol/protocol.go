@@ -26,7 +26,12 @@ const (
 	TypeState    uint16 = 3 // client -> server, every tick
 	TypeSnapshot uint16 = 4 // server -> client, every tick
 	TypeBye      uint16 = 5 // client -> server, on a clean disconnect
+	TypeChat     uint16 = 6 // client -> server a line of text; server -> everyone (sender included)
 )
+
+// ChatTextLen is the fixed size of a chat line on the wire, NUL-padded.
+// Anything longer is truncated by the encoder.
+const ChatTextLen = 128
 
 // NameLen is the fixed size of every name field, NUL-padded. Car identity
 // (the game's Cars\<folder> name) uses the same size.
@@ -137,6 +142,16 @@ type Entity struct {
 // EntitySize is the fixed on-the-wire size of one Entity.
 const EntitySize = 4 + 2 + 2 + NameLen + NameLen + 48 + TelemetrySize + 4
 
+// Chat is one line of text. The same shape travels both ways: a client sends
+// it with its own id and whatever name it likes, the server overwrites both
+// from the session it knows and rebroadcasts to every client - including the
+// sender, whose message thereby appears exactly when everyone else sees it.
+type Chat struct {
+	PlayerID uint32
+	Name     string // NameLen bytes on the wire
+	Text     string // ChatTextLen bytes on the wire
+}
+
 // SnapshotHeaderSize is the snapshot's own header, after the common one.
 const SnapshotHeaderSize = 4 + 4 + 2 + 2
 
@@ -167,6 +182,15 @@ func (w *writer) name(s string) {
 	copy(buf[:], s) // truncates, and leaves the tail NUL
 	if len(s) >= NameLen {
 		buf[NameLen-1] = 0
+	}
+	w.b = append(w.b, buf[:]...)
+}
+
+func (w *writer) chatText(s string) {
+	var buf [ChatTextLen]byte
+	copy(buf[:], s) // truncates, and leaves the tail NUL
+	if len(s) >= ChatTextLen {
+		buf[ChatTextLen-1] = 0
 	}
 	w.b = append(w.b, buf[:]...)
 }
@@ -243,6 +267,20 @@ func (r *reader) name() string {
 	}
 	raw := r.b[r.i : r.i+NameLen]
 	r.i += NameLen
+	for j, c := range raw {
+		if c == 0 {
+			return string(raw[:j])
+		}
+	}
+	return string(raw)
+}
+
+func (r *reader) chatText() string {
+	if !r.need(ChatTextLen) {
+		return ""
+	}
+	raw := r.b[r.i : r.i+ChatTextLen]
+	r.i += ChatTextLen
 	for j, c := range raw {
 		if c == 0 {
 			return string(raw[:j])
@@ -353,6 +391,23 @@ func DecodeState(b []byte) (State, error) {
 	s.Transform = r.transform()
 	s.Telemetry = r.telemetry()
 	return s, r.err
+}
+
+// EncodeChat builds a Chat datagram.
+func EncodeChat(c Chat) []byte {
+	w := &writer{}
+	w.header(TypeChat)
+	w.u32(c.PlayerID)
+	w.name(c.Name)
+	w.chatText(c.Text)
+	return w.b
+}
+
+// DecodeChat parses a Chat datagram.
+func DecodeChat(b []byte) (Chat, error) {
+	r := &reader{b: b, i: HeaderSize}
+	c := Chat{PlayerID: r.u32(), Name: r.name(), Text: r.chatText()}
+	return c, r.err
 }
 
 // EncodeSnapshot builds a Snapshot datagram.

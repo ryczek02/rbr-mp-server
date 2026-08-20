@@ -177,9 +177,30 @@ A client never appears in its own snapshot.
 Header only. The server forgets the client immediately; without it, the client
 is dropped after the timeout (5 s by default).
 
+## Chat (6) — both directions
+
+One line of text. The same layout travels both ways:
+
+| offset | size | type | field |
+|---|---|---|---|
+| 8  | 4   | u32 | playerId |
+| 12 | 24  | chars | name, NUL-padded |
+| 36 | 128 | chars | text, NUL-padded (`ChatTextLen`) |
+
+A client sends it with whatever id/name it has; the server **overwrites both
+from the session it knows** and rebroadcasts the line to every connected
+client — the sender included, so a message appears for its author exactly when
+everyone else sees it (no local echo path in the client). The server drops
+empty lines, lines from addresses without a session, and anything faster than
+one line per 300 ms per client. Like everything else here it is fire-and-forget
+UDP: a lost chat line is simply lost.
+
+Join/leave notices are NOT a message type: clients derive them from entity ids
+appearing in and disappearing from snapshots.
+
 ## Not in version 2
 
 Stage identity (you see every player on the server, whichever stage they are
-on), damage, lap and timing data, chat, reliability or ordering for anything,
-and any form of authentication. The version field exists so these can be added
+on), damage, lap and timing data, reliability or ordering for anything, and
+any form of authentication. The version field exists so these can be added
 without guessing.
