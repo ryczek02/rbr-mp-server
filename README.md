@@ -57,6 +57,12 @@ Cross-compiling for a Linux box:
 GOOS=linux GOARCH=amd64 go build -o rbrmp-server ./cmd/rbrmp-server
 ```
 
+## Installation
+
+* **[docs/INSTALL.md](docs/INSTALL.md)** — the "play tonight" guide: prebuilt
+  binaries from the release pages, local/LAN/internet setup, client install,
+  troubleshooting.
+
 ## Deployment
 
 * **[Dockerfile](Dockerfile)** — multi-stage build ending on `scratch`: a
@@ -160,7 +166,7 @@ cmd/rbrmp-server/   the binary: flags, signals, wiring
 cmd/rbrmp-sim/      fake game client for testing and measurement
 internal/protocol/  the wire format: encode/decode, no I/O
 internal/server/    the relay: session handling, tick loop, echo history
-docs/               PROTOCOL.md, DEPLOYMENT.md
+docs/               INSTALL.md, PROTOCOL.md, DEPLOYMENT.md
 ```
 
 ## Tests
