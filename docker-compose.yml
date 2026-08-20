@@ -19,7 +19,9 @@ services:
     container_name: rbrmp-server
     command: ["-addr", ":40100", "-tick", "30", "-echo", "0", "-stats", "60s"]
     ports:
-      - "40100:40100/udp"
+      # 0.0.0.0 = every interface of the host: 127.0.0.1 for local tools AND
+      # the machine's LAN address, so other PCs on the same network can join.
+      - "0.0.0.0:40100:40100/udp"
     restart: unless-stopped
     # The server holds no state worth persisting and needs nothing writable.
     read_only: true

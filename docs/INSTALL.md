@@ -74,6 +74,41 @@ by itself at startup; there is no injector or launcher to run.
 4. Load a stage and drive. With the default `-echo 1s` your own car replays
    beside you a second behind; that means the whole chain works.
 
+## Running the server on macOS (Docker)
+
+The server itself is Windows/Linux, but any Mac with
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) (or OrbStack)
+can host it — the image builds natively on Apple Silicon and Intel alike:
+
+```bash
+git clone https://github.com/ryczek02/rbr-mp-server
+cd rbr-mp-server
+docker compose up -d
+```
+
+That builds the image and starts the server with **UDP 40100 published on
+`0.0.0.0`** — meaning every interface at once: `127.0.0.1` for anything on the
+Mac itself, and the Mac's Wi-Fi address for the gaming PCs on the same
+network. macOS does not firewall Docker's published ports by default, so there
+is nothing else to open.
+
+Point the game clients at the Mac's LAN address, which you get with:
+
+```bash
+ipconfig getifaddr en0        # e.g. 192.168.1.42 -> connect to 192.168.1.42:40100
+```
+
+Watching it work, and stopping it:
+
+```bash
+docker compose logs -f        # the traffic line shows clients joining
+docker compose down
+```
+
+Tuning goes through the `command:` line in `docker-compose.yml` (all the flags
+above); the checked-in default is `-echo 0` for real sessions — switch it to
+`-echo 1s` while testing alone, then `docker compose up -d` again to apply.
+
 ## Playing over LAN
 
 Everyone installs the DLL (step 2). One player runs the server and the others
