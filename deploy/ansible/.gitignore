@@ -1,0 +1,3 @@
+# Real hosts and their SSH details stay local; inventory.example.ini is the template.
+inventory.ini
+*.retry

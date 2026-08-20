@@ -34,3 +34,36 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  deploy:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the release binary just published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" --pattern rbrmp-server-linux-amd64
+
+      - name: Ship it to the VPS and restart the service
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          install -m 600 /dev/null deploy_key
+          printf '%s\n' "$SSH_KEY" > deploy_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          scp -i deploy_key rbrmp-server-linux-amd64 "$SSH_USER@$SSH_HOST:/tmp/rbrmp-server-$VERSION"
+          ssh -i deploy_key "$SSH_USER@$SSH_HOST" "
+            set -e
+            sudo mv /tmp/rbrmp-server-$VERSION /opt/rbrmp/rbrmp-server-$VERSION
+            sudo chown root:root /opt/rbrmp/rbrmp-server-$VERSION
+            sudo chmod 755 /opt/rbrmp/rbrmp-server-$VERSION
+            sudo ln -sfn /opt/rbrmp/rbrmp-server-$VERSION /opt/rbrmp/rbrmp-server
+            sudo systemctl daemon-reload
+            sudo systemctl restart rbrmp-server
+            sudo systemctl is-active rbrmp-server
+          "
