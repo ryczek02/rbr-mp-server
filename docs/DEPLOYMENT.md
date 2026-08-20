@@ -84,17 +84,23 @@ journalctl -u rbrmp-server -f
 
 ## Option 3 — Ansible (repeatable, many hosts, upgrades)
 
-Option 2, automated: [deploy/ansible/](../deploy/ansible/) downloads a pinned
+Option 2, automated: [deploy/ansible/](../deploy/ansible/) fetches a pinned
 release binary from GitHub Releases, installs a hardened systemd unit and
 opens UDP 40100 through ufw. One command deploys, the same command with a new
 version upgrades and restarts:
 
 ```bash
 cd deploy/ansible
-cp inventory.example.ini inventory.ini   # put your host in
+cp inventory.example.ini inventory.ini   # put your host in (gitignored)
 ansible-playbook -i inventory.ini deploy.yml
 ansible-playbook -i inventory.ini deploy.yml -e rbrmp_version=v0.2.0   # upgrade
 ```
+
+The repo is private, so the binary is downloaded **on your machine** with
+`gh release download` and copied up — no GitHub token ever reaches the server.
+That means the control node needs `gh` installed and `gh auth login` done;
+releases are cached under `~/.cache/rbrmp-deploy/<version>/`. If the repo ever
+goes public, swap that task back to `get_url` on the release URL.
 
 Flags live in `rbrmp_flags`, the port in `rbrmp_port`, and
 `rbrmp_manage_ufw=false` skips the firewall task on hosts managed elsewhere.

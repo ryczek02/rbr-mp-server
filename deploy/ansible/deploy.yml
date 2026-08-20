@@ -6,6 +6,10 @@
 # The server is a single static binary, so this is deliberately not Docker:
 # download the release, install a hardened systemd unit, open the UDP port.
 # Re-running with a new rbrmp_version downloads that version and restarts.
+#
+# The repo is private, so the release is fetched on the control node with `gh`
+# (which already has your credentials) and copied up. No token on the server.
+# Requires: gh installed and `gh auth login` done locally.
 
 - name: Deploy RBR-MP-Server
   hosts: rbrmp
@@ -21,9 +25,37 @@
     # Set false if the host has no ufw or the firewall is managed elsewhere.
     rbrmp_manage_ufw: true
 
-    rbrmp_url: "https://github.com/ryczek02/rbr-mp-server/releases/download/{{ rbrmp_version }}/rbrmp-server-{{ rbrmp_arch }}"
+    rbrmp_repo: ryczek02/rbr-mp-server
+    # Where the control node keeps downloaded releases between runs.
+    rbrmp_cache_dir: "{{ lookup('env', 'HOME') }}/.cache/rbrmp-deploy"
+
+    rbrmp_asset: "rbrmp-server-{{ rbrmp_arch }}"
+    rbrmp_local_binary: "{{ rbrmp_cache_dir }}/{{ rbrmp_version }}/{{ rbrmp_asset }}"
 
   tasks:
+    - name: Check gh is authenticated on the control node
+      ansible.builtin.command: gh auth status
+      delegate_to: localhost
+      run_once: true
+      become: false
+      changed_when: false
+      register: rbrmp_gh_auth
+      failed_when: rbrmp_gh_auth.rc != 0
+      # The release lives in a private repo; without gh credentials the
+      # download below 404s. Run `gh auth login` and retry.
+
+    - name: Fetch the release binary to the control node
+      ansible.builtin.command:
+        cmd: >-
+          gh release download {{ rbrmp_version }}
+          --repo {{ rbrmp_repo }}
+          --pattern {{ rbrmp_asset }}
+          --dir {{ rbrmp_cache_dir }}/{{ rbrmp_version }}
+        creates: "{{ rbrmp_local_binary }}"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
     - name: System user for the service
       ansible.builtin.user:
         name: rbrmp
@@ -39,13 +71,14 @@
         group: root
         mode: "0755"
 
-    - name: Download the release binary (one file per version)
-      ansible.builtin.get_url:
-        url: "{{ rbrmp_url }}"
+    - name: Upload the release binary (one file per version)
+      ansible.builtin.copy:
+        src: "{{ rbrmp_local_binary }}"
         dest: "/opt/rbrmp/rbrmp-server-{{ rbrmp_version }}"
         owner: root
         group: root
         mode: "0755"
+      notify: Restart rbrmp-server
 
     - name: Point the current-version link at it
       ansible.builtin.file:
