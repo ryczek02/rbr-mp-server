@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.svg" alt="RBR-MP-Server logo" width="200">
+</p>
+
 # RBR-MP-Server
 
 <p>
