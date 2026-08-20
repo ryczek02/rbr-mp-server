@@ -20,6 +20,11 @@
     rbrmp_flags: "-tick 30 -echo 0 -stats 60s"
     # Set false if the host has no ufw or the firewall is managed elsewhere.
     rbrmp_manage_ufw: true
+    # Auto-update: a systemd timer checks GitHub Releases and swaps the binary
+    # in (restarting the service) whenever a new release appears. Set false to
+    # only ever deploy the pinned rbrmp_version.
+    rbrmp_auto_update: true
+    rbrmp_update_every: 5min
 
     rbrmp_url: "https://github.com/ryczek02/rbr-mp-server/releases/download/{{ rbrmp_version }}/rbrmp-server-{{ rbrmp_arch }}"
 
@@ -67,6 +72,31 @@
         enabled: true
         state: started
         daemon_reload: true
+
+    - name: Auto-update script
+      ansible.builtin.template:
+        src: rbrmp-update.sh.j2
+        dest: /opt/rbrmp/update.sh
+        mode: "0755"
+      when: rbrmp_auto_update
+
+    - name: Auto-update service + timer
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: "0644"
+      loop:
+        - rbrmp-update.service
+        - rbrmp-update.timer
+      when: rbrmp_auto_update
+
+    - name: Auto-update timer enabled
+      ansible.builtin.systemd:
+        name: rbrmp-update.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: rbrmp_auto_update
 
     - name: Open the UDP port (ufw)
       community.general.ufw:

@@ -47,6 +47,8 @@ Usage of rbrmp-server:
   -echo duration    replay each client to itself this far behind,
                     0 disables the echo player (default 1s)
   -timeout duration drop a client silent for this long (default 5s)
+  -stale duration   stop relaying a player whose newest state is older
+                    than this, so others despawn him quickly (default 2s)
   -stats duration   how often to print a traffic line, 0 = never (default 10s)
   -v                log malformed datagrams and send errors
 ```

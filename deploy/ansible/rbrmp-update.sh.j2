@@ -1,0 +1,23 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Pull the newest release binary; restart the service only when it changed.
+# Run by rbrmp-update.timer every few minutes, or by hand:
+#   sudo /opt/rbrmp/update.sh
+set -eu
+
+URL="https://github.com/ryczek02/rbr-mp-server/releases/latest/download/rbrmp-server-{{ rbrmp_arch }}"
+NEW=/opt/rbrmp/rbrmp-server.new
+CUR=/opt/rbrmp/rbrmp-server-current
+
+curl -fsSL --max-time 60 -o "$NEW" "$URL"
+chmod 755 "$NEW"
+
+if [ -f "$CUR" ] && cmp -s "$NEW" "$CUR"; then
+    rm -f "$NEW"
+    exit 0
+fi
+
+mv "$NEW" "$CUR"
+ln -sfn "$CUR" /opt/rbrmp/rbrmp-server
+systemctl restart rbrmp-server
+echo "rbrmp-server updated to the latest release and restarted"

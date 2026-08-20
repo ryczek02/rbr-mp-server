@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Check for a new RBR-MP-Server release
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ rbrmp_update_every }}
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target
