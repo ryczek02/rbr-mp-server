@@ -82,6 +82,25 @@ sudo systemctl enable --now rbrmp-server
 journalctl -u rbrmp-server -f
 ```
 
+## Option 3 — Ansible (repeatable, many hosts, upgrades)
+
+Option 2, automated: [deploy/ansible/](../deploy/ansible/) downloads a pinned
+release binary from GitHub Releases, installs a hardened systemd unit and
+opens UDP 40100 through ufw. One command deploys, the same command with a new
+version upgrades and restarts:
+
+```bash
+cd deploy/ansible
+cp inventory.example.ini inventory.ini   # put your host in
+ansible-playbook -i inventory.ini deploy.yml
+ansible-playbook -i inventory.ini deploy.yml -e rbrmp_version=v0.2.0   # upgrade
+```
+
+Flags live in `rbrmp_flags`, the port in `rbrmp_port`, and
+`rbrmp_manage_ufw=false` skips the firewall task on hosts managed elsewhere.
+Needs the `community.general` collection for the ufw task
+(`ansible-galaxy collection install community.general`).
+
 ## Firewall
 
 The one rule everyone forgets: the port is **UDP**, not TCP.

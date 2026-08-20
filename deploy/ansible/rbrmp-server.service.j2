@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+[Unit]
+Description=RBR-MP multiplayer relay (UDP {{ rbrmp_port }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/rbrmp/rbrmp-server -addr :{{ rbrmp_port }} {{ rbrmp_flags }}
+User=rbrmp
+Group=rbrmp
+Restart=always
+RestartSec=2
+
+# The process needs nothing but a UDP socket; take everything else away.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

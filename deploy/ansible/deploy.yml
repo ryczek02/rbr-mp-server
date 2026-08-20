@@ -1,0 +1,83 @@
+# Deploy RBR-MP-Server to any Linux host with systemd.
+#
+#   ansible-playbook -i inventory.ini deploy.yml
+#   ansible-playbook -i inventory.ini deploy.yml -e rbrmp_version=v0.2.0   # upgrade
+#
+# The server is a single static binary, so this is deliberately not Docker:
+# download the release, install a hardened systemd unit, open the UDP port.
+# Re-running with a new rbrmp_version downloads that version and restarts.
+
+- name: Deploy RBR-MP-Server
+  hosts: rbrmp
+  become: true
+
+  vars:
+    # Pin the release to deploy; override with -e rbrmp_version=vX.Y.Z
+    rbrmp_version: v0.1.0
+    rbrmp_arch: linux-amd64          # or linux-arm64 once released
+    rbrmp_port: 40100
+    # Every flag the binary takes; -addr is derived from rbrmp_port.
+    rbrmp_flags: "-tick 30 -echo 0 -stats 60s"
+    # Set false if the host has no ufw or the firewall is managed elsewhere.
+    rbrmp_manage_ufw: true
+
+    rbrmp_url: "https://github.com/ryczek02/rbr-mp-server/releases/download/{{ rbrmp_version }}/rbrmp-server-{{ rbrmp_arch }}"
+
+  tasks:
+    - name: System user for the service
+      ansible.builtin.user:
+        name: rbrmp
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Install directory
+      ansible.builtin.file:
+        path: /opt/rbrmp
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the release binary (one file per version)
+      ansible.builtin.get_url:
+        url: "{{ rbrmp_url }}"
+        dest: "/opt/rbrmp/rbrmp-server-{{ rbrmp_version }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Point the current-version link at it
+      ansible.builtin.file:
+        src: "/opt/rbrmp/rbrmp-server-{{ rbrmp_version }}"
+        dest: /opt/rbrmp/rbrmp-server
+        state: link
+      notify: Restart rbrmp-server
+
+    - name: Systemd unit
+      ansible.builtin.template:
+        src: rbrmp-server.service.j2
+        dest: /etc/systemd/system/rbrmp-server.service
+        mode: "0644"
+      notify: Restart rbrmp-server
+
+    - name: Service enabled and started
+      ansible.builtin.systemd:
+        name: rbrmp-server
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Open the UDP port (ufw)
+      community.general.ufw:
+        rule: allow
+        port: "{{ rbrmp_port }}"
+        proto: udp
+      when: rbrmp_manage_ufw
+
+  handlers:
+    - name: Restart rbrmp-server
+      ansible.builtin.systemd:
+        name: rbrmp-server
+        state: restarted
+        daemon_reload: true
