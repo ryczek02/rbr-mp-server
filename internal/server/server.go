@@ -7,6 +7,8 @@ import (
 	"log"
 	"net"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,24 +17,40 @@ import (
 
 // Config is everything the server can be told.
 type Config struct {
-	Addr    string        // ":40100"
-	TickAt  time.Duration // how often snapshots go out
-	Timeout time.Duration // drop a client that has gone quiet this long
-	Stale   time.Duration // stop relaying a player whose state is older than this
-	Verbose bool
-	Stats   time.Duration // how often to print a line; 0 = never
+	Addr     string        // ":40100"
+	TickAt   time.Duration // how often snapshots go out
+	Timeout  time.Duration // drop a client that has gone quiet this long
+	Stale    time.Duration // stop relaying a player whose state is older than this
+	Verbose  bool
+	Stats    time.Duration // how often to print a line; 0 = never
+	BansPath string        // JSON file the ban list persists to
 }
 
 // DefaultConfig is what the binary runs with when given no flags.
 func DefaultConfig() Config {
 	return Config{
-		Addr:    ":40100",
-		TickAt:  time.Second / 30,
-		Timeout: 5 * time.Second,
-		Stale:   2 * time.Second,
-		Stats:   10 * time.Second,
+		Addr:     ":40100",
+		TickAt:   time.Second / 30,
+		Timeout:  5 * time.Second,
+		Stale:    2 * time.Second,
+		Stats:    10 * time.Second,
+		BansPath: "bans.json",
 	}
 }
+
+// pingEvery is how often the server measures each client's round trip, and
+// also how long an unanswered ping waits before it is written off as lost
+// and resent.
+const pingEvery = 2 * time.Second
+
+// kickWindow is how long after a kick the address's Hello/State datagrams
+// are silently dropped, so the client's automatic re-register does not put
+// the player straight back.
+const kickWindow = 10 * time.Second
+
+// banNoticeEvery rate-limits the Kick reply a banned address gets, so a
+// banned client still learns why but cannot make the server chatty.
+const banNoticeEvery = 5 * time.Second
 
 type client struct {
 	id       uint32
@@ -51,6 +69,13 @@ type client struct {
 	dropped          uint64 // States that arrived out of order
 
 	lastChat time.Time // flood guard: one line per 300 ms per client
+
+	// Ping measurement. The server sends a Ping every pingEvery, the client
+	// echoes the token in a Pong, and rttMs is the measured round trip.
+	rttMs      uint32
+	pingToken  uint32
+	pingSentAt time.Time // zero = no ping outstanding
+	lastPingAt time.Time
 }
 
 // Server is a running instance. Use New then Run.
@@ -62,6 +87,14 @@ type Server struct {
 	mu      sync.Mutex
 	clients map[string]*client
 	nextID  uint32
+
+	bans *banList
+	// recentlyKicked holds addresses (addr.String()) whose Hello/State are
+	// dropped for kickWindow after a kick, so the client's auto-re-register
+	// does not instantly re-add the player.
+	recentlyKicked map[string]time.Time
+	// lastBanNotice rate-limits the Kick reply sent to banned addresses.
+	lastBanNotice map[string]time.Time
 
 	started  time.Time
 	rxCount  uint64
@@ -82,6 +115,18 @@ func New(cfg Config, logger *log.Logger) (*Server, error) {
 	if cfg.Stale <= 0 {
 		cfg.Stale = 2 * time.Second
 	}
+	if cfg.BansPath == "" {
+		cfg.BansPath = "bans.json"
+	}
+	bans, err := loadBans(cfg.BansPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(bans.entries) == 0 {
+		logger.Printf("no bans loaded from %s", cfg.BansPath)
+	} else {
+		logger.Printf("%d ban(s) loaded from %s", len(bans.entries), cfg.BansPath)
+	}
 	addr, err := net.ResolveUDPAddr("udp", cfg.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", cfg.Addr, err)
@@ -91,12 +136,15 @@ func New(cfg Config, logger *log.Logger) (*Server, error) {
 		return nil, fmt.Errorf("listen %q: %w", cfg.Addr, err)
 	}
 	return &Server{
-		cfg:     cfg,
-		conn:    conn,
-		log:     logger,
-		clients: make(map[string]*client),
-		nextID:  1,
-		started: time.Now(),
+		cfg:            cfg,
+		conn:           conn,
+		log:            logger,
+		clients:        make(map[string]*client),
+		nextID:         1,
+		bans:           bans,
+		recentlyKicked: make(map[string]time.Time),
+		lastBanNotice:  make(map[string]time.Time),
+		started:        time.Now(),
 	}, nil
 }
 
@@ -135,6 +183,23 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) handle(b []byte, addr *net.UDPAddr, now time.Time) {
+	// Bans first, before any decode: one map lookup on the IP string, and
+	// everything from a banned address is dropped. At most once per
+	// banNoticeEvery the address is also told why, with a Kick.
+	s.mu.Lock()
+	if ban, banned := s.bans.get(addr.IP.String()); banned {
+		notify := now.Sub(s.lastBanNotice[addr.String()]) >= banNoticeEvery
+		if notify {
+			s.lastBanNotice[addr.String()] = now
+		}
+		s.mu.Unlock()
+		if notify {
+			s.send(addr, protocol.EncodeKick(protocol.Kick{Reason: "banned: " + ban.Reason}))
+		}
+		return
+	}
+	s.mu.Unlock()
+
 	msgType, err := protocol.ParseHeader(b)
 	if err != nil {
 		if s.cfg.Verbose {
@@ -145,6 +210,9 @@ func (s *Server) handle(b []byte, addr *net.UDPAddr, now time.Time) {
 
 	switch msgType {
 	case protocol.TypeHello:
+		if s.kickedRecently(addr, now) {
+			return
+		}
 		h, err := protocol.DecodeHello(b)
 		if err != nil {
 			return
@@ -152,11 +220,21 @@ func (s *Server) handle(b []byte, addr *net.UDPAddr, now time.Time) {
 		s.join(addr, h, now)
 
 	case protocol.TypeState:
+		if s.kickedRecently(addr, now) {
+			return
+		}
 		st, err := protocol.DecodeState(b)
 		if err != nil {
 			return
 		}
 		s.state(addr, st, now)
+
+	case protocol.TypePong:
+		p, err := protocol.DecodePong(b)
+		if err != nil {
+			return
+		}
+		s.pong(addr, p, now)
 
 	case protocol.TypeChat:
 		ch, err := protocol.DecodeChat(b)
@@ -173,6 +251,32 @@ func (s *Server) handle(b []byte, addr *net.UDPAddr, now time.Time) {
 		}
 		s.mu.Unlock()
 	}
+}
+
+// kickedRecently reports whether the address was kicked inside the last
+// kickWindow, during which its Hello/State are silently dropped.
+func (s *Server) kickedRecently(addr *net.UDPAddr, now time.Time) bool {
+	s.mu.Lock()
+	at, ok := s.recentlyKicked[addr.String()]
+	s.mu.Unlock()
+	return ok && now.Sub(at) < kickWindow
+}
+
+// pong closes the loop a tick's Ping opened: a matching token from a known
+// address turns into that client's measured round trip.
+func (s *Server) pong(addr *net.UDPAddr, p protocol.Pong, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.clients[addr.String()]
+	if !ok || c.pingSentAt.IsZero() || p.Token != c.pingToken {
+		return
+	}
+	rtt := now.Sub(c.pingSentAt).Milliseconds()
+	if rtt < 0 {
+		rtt = 0
+	}
+	c.rttMs = uint32(rtt)
+	c.pingSentAt = time.Time{}
 }
 
 // clientLocked finds or creates the client for an address. The caller must
@@ -343,6 +447,34 @@ func (s *Server) tick(now time.Time) {
 		}
 	}
 
+	// Forget kicks and ban notices old enough not to matter any more.
+	for key, at := range s.recentlyKicked {
+		if now.Sub(at) >= kickWindow {
+			delete(s.recentlyKicked, key)
+		}
+	}
+	for key, at := range s.lastBanNotice {
+		if now.Sub(at) >= banNoticeEvery {
+			delete(s.lastBanNotice, key)
+		}
+	}
+
+	// Ping whoever is due: last ping ≥ pingEvery ago, and either nothing
+	// outstanding or the outstanding one is old enough to be written off as
+	// lost and resent.
+	for _, c := range s.clients {
+		if now.Sub(c.lastPingAt) < pingEvery {
+			continue
+		}
+		if !c.pingSentAt.IsZero() && now.Sub(c.pingSentAt) <= pingEvery {
+			continue
+		}
+		c.pingToken = s.uptimeMs(now)
+		c.pingSentAt = now
+		c.lastPingAt = now
+		out = append(out, outgoing{addr: c.addr, data: protocol.EncodePing(protocol.Ping{Token: c.pingToken})})
+	}
+
 	live := make([]*client, 0, len(s.clients))
 	for _, c := range s.clients {
 		live = append(live, c)
@@ -373,14 +505,15 @@ func (s *Server) tick(now time.Time) {
 					Transform:    sample.Transform,
 					Telemetry:    sample.Telemetry,
 					SampleTimeMs: sample.ClientTimeMs,
+					PingMs:       clampPing(other.rttMs),
 				})
 			}
 		}
 
-
 		data := protocol.EncodeSnapshot(protocol.Snapshot{
 			ServerTimeMs:     s.uptimeMs(now),
 			LastClientTimeMs: me.lastClientTimeMs,
+			SelfPingMs:       clampPing(me.rttMs),
 			Entities:         entities,
 		})
 		out = append(out, outgoing{addr: me.addr, data: data})
@@ -392,6 +525,138 @@ func (s *Server) tick(now time.Time) {
 	}
 }
 
+// clampPing squeezes a measured RTT into the u16 the wire carries.
+func clampPing(ms uint32) uint16 {
+	if ms > 65535 {
+		return 65535
+	}
+	return uint16(ms)
+}
+
+// findClientLocked resolves "3" or "alice" (case-insensitive) to a session.
+// The caller must hold s.mu.
+func (s *Server) findClientLocked(idOrName string) *client {
+	if id, err := strconv.ParseUint(idOrName, 10, 32); err == nil {
+		for _, c := range s.clients {
+			if c.id == uint32(id) {
+				return c
+			}
+		}
+	}
+	for _, c := range s.clients {
+		if strings.EqualFold(c.name, idOrName) {
+			return c
+		}
+	}
+	return nil
+}
+
+// Kick removes a connected player by id or name: the client is told why (a
+// few times, since UDP), the session is deleted, and the address is ignored
+// for kickWindow so the client's auto-re-register does not put it straight
+// back. Safe to call from any goroutine (RCON does).
+func (s *Server) Kick(idOrName, reason string) error {
+	if reason == "" {
+		reason = "kicked"
+	}
+	s.mu.Lock()
+	c := s.findClientLocked(idOrName)
+	if c == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("no connected player matches %q", idOrName)
+	}
+	delete(s.clients, c.addrKey)
+	s.recentlyKicked[c.addrKey] = time.Now()
+	s.log.Printf("player %d (%s) kicked: %s", c.id, c.name, reason)
+	s.mu.Unlock()
+
+	// Fire-and-forget UDP: three copies, so one lost datagram does not leave
+	// the client wondering.
+	data := protocol.EncodeKick(protocol.Kick{Reason: reason})
+	for i := 0; i < 3; i++ {
+		s.send(c.addr, data)
+	}
+	return nil
+}
+
+// Ban bans by connected player (id or name - they are kicked too) or, when
+// nothing matches, by literal IP. The ban persists to the bans file.
+func (s *Server) Ban(idOrNameOrIP, reason string) error {
+	if reason == "" {
+		reason = "banned"
+	}
+	s.mu.Lock()
+	c := s.findClientLocked(idOrNameOrIP)
+	s.mu.Unlock()
+
+	ip, name := "", ""
+	if c != nil {
+		ip, name = c.addr.IP.String(), c.name
+	} else {
+		parsed := net.ParseIP(idOrNameOrIP)
+		if parsed == nil {
+			return fmt.Errorf("%q is neither a connected player nor an IP", idOrNameOrIP)
+		}
+		ip = parsed.String()
+	}
+
+	s.mu.Lock()
+	s.bans.add(BanEntry{
+		IP:       ip,
+		Name:     name,
+		Reason:   reason,
+		BannedAt: time.Now().UTC(),
+		BannedBy: "rcon",
+	})
+	err := s.bans.save()
+	s.log.Printf("banned %s (%s): %s", ip, name, reason)
+	s.mu.Unlock()
+
+	if c != nil {
+		if kerr := s.Kick(idOrNameOrIP, "banned: "+reason); kerr != nil && err == nil {
+			err = kerr
+		}
+	}
+	return err
+}
+
+// Unban removes an IP from the ban list and persists the change.
+func (s *Server) Unban(ip string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.bans.remove(ip) {
+		return fmt.Errorf("%s is not banned", ip)
+	}
+	s.log.Printf("unbanned %s", ip)
+	return s.bans.save()
+}
+
+// Bans returns the current ban list, oldest first.
+func (s *Server) Bans() []BanEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bans.list()
+}
+
+// Say broadcasts a chat line to every client as the server itself:
+// player id 0, name "SERVER" - an id no real player ever gets.
+func (s *Server) Say(text string) {
+	if text == "" {
+		return
+	}
+	s.mu.Lock()
+	data := protocol.EncodeChat(protocol.Chat{PlayerID: 0, Name: "SERVER", Text: text})
+	addrs := make([]*net.UDPAddr, 0, len(s.clients))
+	for _, c := range s.clients {
+		addrs = append(addrs, c.addr)
+	}
+	s.log.Printf("chat 0 (SERVER): %s", text)
+	s.mu.Unlock()
+
+	for _, a := range addrs {
+		s.send(a, data)
+	}
+}
 
 func (s *Server) send(addr *net.UDPAddr, b []byte) {
 	n, err := s.conn.WriteToUDP(b, addr)

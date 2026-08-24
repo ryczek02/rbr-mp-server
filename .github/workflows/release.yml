@@ -28,6 +28,8 @@ jobs:
           GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/rbrmp-server-linux-amd64      ./cmd/rbrmp-server
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/rbrmp-sim-windows-amd64.exe   ./cmd/rbrmp-sim
           GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/rbrmp-sim-linux-amd64         ./cmd/rbrmp-sim
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/clirbrmp-windows-amd64.exe    ./cmd/clirbrmp
+          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/clirbrmp-linux-amd64          ./cmd/clirbrmp
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

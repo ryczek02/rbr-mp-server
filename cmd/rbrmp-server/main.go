@@ -33,6 +33,10 @@ func main() {
 		"stop relaying a player whose newest state is older than this")
 	flag.DurationVar(&cfg.Stats, "stats", cfg.Stats, "how often to print a traffic line (0 = never)")
 	flag.BoolVar(&cfg.Verbose, "v", false, "log malformed datagrams and send errors")
+	flag.StringVar(&cfg.BansPath, "bans", cfg.BansPath, "JSON file the ban list persists to")
+	rconAddr := flag.String("rcon-addr", ":40101", "TCP address for the RCON admin console")
+	rconPassword := flag.String("rcon-password", "",
+		"RCON password; empty disables RCON (env RBRMP_RCON_PASSWORD is the fallback)")
 	flag.Parse()
 
 	if *tickHz <= 0 || *tickHz > 240 {
@@ -47,6 +51,23 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+
+	// RCON: TCP admin console, enabled only when a password is set.
+	password := *rconPassword
+	if password == "" {
+		password = os.Getenv("RBRMP_RCON_PASSWORD")
+	}
+	if password == "" {
+		logger.Println("rcon disabled (no -rcon-password and no RBRMP_RCON_PASSWORD)")
+	} else {
+		l, err := net.Listen("tcp", *rconAddr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer l.Close()
+		go srv.ServeRCON(l, password)
 	}
 
 	// Ctrl-C closes the socket, which makes Run return.

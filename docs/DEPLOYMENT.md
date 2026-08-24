@@ -1,8 +1,10 @@
 # Deploying RBR-MP-Server
 
 The server is a single static binary that listens on one UDP port. There is no
-database, no persistent state, no TLS and no admin interface — deployment is
-"run the process, open the port".
+database and no TLS — deployment is "run the process, open the port". The only
+state on disk is the ban list (`-bans`, default `bans.json` next to the
+working directory), and the only admin interface is the optional RCON console
+below.
 
 ## What it needs
 
@@ -152,6 +154,38 @@ sudo firewall-cmd --add-port=40100/udp --permanent && sudo firewall-cmd --reload
 Cloud providers gate this in their security groups / network rules as well —
 "connection works from the VPS itself but not from outside" is almost always
 the provider's firewall still closed for UDP.
+
+## RCON (admin console)
+
+With `-rcon-password` (or the `RBRMP_RCON_PASSWORD` environment variable) set,
+the server also listens on **TCP** `-rcon-addr` (default `:40101`) for the
+admin console that `clirbrmp` talks to: kick, ban/unban, say, players, status.
+No password = no listener.
+
+**Do not open this port to the world.** It is plain TCP with a plaintext
+password — an obstacle, not a wall. Either:
+
+* bind it to localhost (`-rcon-addr 127.0.0.1:40101`) and administrate over an
+  SSH tunnel: `ssh -L 40101:127.0.0.1:40101 you@host`, then `clirbrmp` against
+  `127.0.0.1:40101`, or
+* firewall TCP 40101 to your admin IPs only:
+  `sudo ufw allow from <your-ip> to any port 40101 proto tcp`.
+
+Under systemd, keep the password out of the unit file's command line (visible
+in `ps`) by passing it as an environment variable:
+
+```ini
+[Service]
+Environment=RBRMP_RCON_PASSWORD=change-me
+# or, better, a root-only file:
+# EnvironmentFile=/etc/rbrmp/rcon.env
+ExecStart=/usr/local/bin/rbrmp-server -addr :40100 -rcon-addr 127.0.0.1:40101 -bans /var/lib/rbrmp/bans.json
+```
+
+Note the hardened unit in Option 2 uses `ProtectSystem=strict`, which makes
+the filesystem read-only — point `-bans` somewhere writable and whitelist it
+(`ReadWritePaths=/var/lib/rbrmp` plus a `StateDirectory=rbrmp`), or bans will
+not persist.
 
 ## Verifying a deployment without the game
 

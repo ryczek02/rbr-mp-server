@@ -42,13 +42,17 @@ Everything is a flag; there is no config file to manage.
 
 ```
 Usage of rbrmp-server:
-  -addr string      UDP address to listen on (default ":40100")
-  -tick int         snapshots per second sent to each client (default 30)
-  -timeout duration drop a client silent for this long (default 5s)
-  -stale duration   stop relaying a player whose newest state is older
-                    than this, so others despawn him quickly (default 2s)
-  -stats duration   how often to print a traffic line, 0 = never (default 10s)
-  -v                log malformed datagrams and send errors
+  -addr string           UDP address to listen on (default ":40100")
+  -tick int              snapshots per second sent to each client (default 30)
+  -timeout duration      drop a client silent for this long (default 5s)
+  -stale duration        stop relaying a player whose newest state is older
+                         than this, so others despawn him quickly (default 2s)
+  -stats duration        how often to print a traffic line, 0 = never (default 10s)
+  -v                     log malformed datagrams and send errors
+  -bans string           JSON file the ban list persists to (default "bans.json")
+  -rcon-addr string      TCP address for the RCON admin console (default ":40101")
+  -rcon-password string  RCON password; empty disables RCON
+                         (env RBRMP_RCON_PASSWORD is the fallback)
 ```
 
 Cross-compiling for a Linux box:
@@ -56,6 +60,51 @@ Cross-compiling for a Linux box:
 ```bash
 GOOS=linux GOARCH=amd64 go build -o rbrmp-server ./cmd/rbrmp-server
 ```
+
+## Administration: RCON and the CLI
+
+With a password set, the server opens a plain-TCP admin console (RCON) next to
+the game port:
+
+```bash
+./rbrmp-server -rcon-password hunter2            # RCON on TCP :40101
+RBRMP_RCON_PASSWORD=hunter2 ./rbrmp-server       # same, password via env
+```
+
+No password, no listener — RCON is off by default. The port is TCP, meant for
+localhost or a firewalled admin IP, **not** for the open internet (see
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+
+`clirbrmp` is the matching client. One-shot:
+
+```bash
+clirbrmp -password hunter2 players
+clirbrmp -password hunter2 kick 3 flooding the chat
+clirbrmp -addr my.vps:40101 -password hunter2 status
+```
+
+Or interactive — run it with no command and type at the `rbrmp>` prompt
+(`help` lists everything, `exit` leaves). `-password` falls back to
+`RBRMP_RCON_PASSWORD`, the same variable the server reads.
+
+Commands: `players`, `kick <id|name> [reason...]`, `ban <id|name|ip>
+[reason...]`, `unban <ip>`, `bans`, `say <text...>` (broadcast a chat line as
+**SERVER**), `status`, `quit`.
+
+**Kicks** delete the session, tell the client why (a `Kick` datagram with the
+reason), and ignore the address for 10 s so the client's automatic re-register
+doesn't put the player straight back.
+
+**Bans** are by IP and persist to a JSON file (`-bans`, default `bans.json`),
+written atomically on every change and loaded at startup — a restart forgets
+nothing. A banned address has everything it sends dropped, and receives a
+`Kick("banned: ...")` at most every 5 s so it knows why.
+
+**Ping**: the server measures every client's real round trip with a
+Ping/Pong exchange (every 2 s, its own clock, no tick-wait in the number) and
+puts it in every snapshot — your own as `SelfPingMs`, everyone else's per
+entity — so clients can show a proper ping column. `players` shows the same
+number.
 
 ## Installation
 
@@ -132,22 +181,24 @@ which is also how to test with company but no second machine.
 
 ## Protocol
 
-Version 2: fixed-layout little-endian UDP, documented field-by-field in
+Version 3: fixed-layout little-endian UDP, documented field-by-field in
 **[docs/PROTOCOL.md](docs/PROTOCOL.md)**. The reference implementation is
 `internal/protocol`, mirrored by the client's `src/net_protocol.cpp`.
 
 A state packet is 112 bytes — about 6.7 kB/s per client at 60 Hz. A snapshot is
-20 bytes plus 152 per entity. Version 2 added car identity and a telemetry
-block (velocity, RPM, steering, gear, per-wheel angular velocity); version 1
-carried pose and speed only.
+20 bytes plus 156 per entity. Version 3 added server-measured ping (Ping/Pong,
+carried per entity and per client in every snapshot) and the admin Kick;
+version 2 added car identity and a telemetry block (velocity, RPM, steering,
+gear, per-wheel angular velocity); version 1 carried pose and speed only.
 
 ## Repository layout
 
 ```
 cmd/rbrmp-server/   the binary: flags, signals, wiring
 cmd/rbrmp-sim/      fake game client for testing and measurement
+cmd/clirbrmp/       admin CLI: one-shot or interactive RCON client
 internal/protocol/  the wire format: encode/decode, no I/O
-internal/server/    the relay: session handling, tick loop, pose history
+internal/server/    the relay: sessions, tick loop, pose history, RCON, bans
 docs/               INSTALL.md, PROTOCOL.md, DEPLOYMENT.md
 ```
 
@@ -170,7 +221,8 @@ it are set before a client is published into the map.
 
 Working: joining, relaying between any number of players, car identity, full
 telemetry pass-through (wheels, RPM, steering, gear, velocity), timeouts,
-traffic stats, the simulator, Docker deployment.
+server-measured ping in every snapshot, chat, kick and persistent IP bans,
+RCON admin console with a CLI, traffic stats, the simulator, Docker deployment.
 
 Not done yet:
 

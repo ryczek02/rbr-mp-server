@@ -5,13 +5,21 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/opt/rbrmp/rbrmp-server -addr :{{ rbrmp_port }} {{ rbrmp_flags }}
+{% if rbrmp_rcon_password %}
+# RCON on localhost only - administrate over an SSH tunnel, never the open
+# internet. The password rides in the environment, not on the command line.
+Environment=RBRMP_RCON_PASSWORD={{ rbrmp_rcon_password }}
+ExecStart=/opt/rbrmp/rbrmp-server -addr :{{ rbrmp_port }} -rcon-addr {{ rbrmp_rcon_addr }} -bans /var/lib/rbrmp/bans.json {{ rbrmp_flags }}
+{% else %}
+ExecStart=/opt/rbrmp/rbrmp-server -addr :{{ rbrmp_port }} -bans /var/lib/rbrmp/bans.json {{ rbrmp_flags }}
+{% endif %}
 User=rbrmp
 Group=rbrmp
 Restart=always
 RestartSec=2
 
-# The process needs nothing but a UDP socket; take everything else away.
+# The process needs a UDP socket and the ban file; take everything else away.
+StateDirectory=rbrmp
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

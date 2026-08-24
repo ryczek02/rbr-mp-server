@@ -190,6 +190,107 @@ func TestDecodeRejectsTruncatedSnapshot(t *testing.T) {
 	}
 }
 
+func TestPingPongRoundTrip(t *testing.T) {
+	pb := EncodePing(Ping{Token: 0xDEADBEEF})
+	if len(pb) != HeaderSize+4 {
+		t.Fatalf("ping is %d bytes, want %d", len(pb), HeaderSize+4)
+	}
+	p, err := DecodePing(pb)
+	if err != nil || p.Token != 0xDEADBEEF {
+		t.Fatalf("ping came back %+v (%v), want token 0xDEADBEEF", p, err)
+	}
+
+	gb := EncodePong(Pong{Token: 42})
+	if len(gb) != HeaderSize+4 {
+		t.Fatalf("pong is %d bytes, want %d", len(gb), HeaderSize+4)
+	}
+	if msgType, _ := ParseHeader(gb); msgType != TypePong {
+		t.Fatalf("pong header type %d, want %d", msgType, TypePong)
+	}
+	g, err := DecodePong(gb)
+	if err != nil || g.Token != 42 {
+		t.Fatalf("pong came back %+v (%v), want token 42", g, err)
+	}
+}
+
+func TestKickRoundTrip(t *testing.T) {
+	b := EncodeKick(Kick{Reason: "banned: bad manners"})
+	if len(b) != HeaderSize+KickReasonLen {
+		t.Fatalf("kick is %d bytes, want %d", len(b), HeaderSize+KickReasonLen)
+	}
+	k, err := DecodeKick(b)
+	if err != nil || k.Reason != "banned: bad manners" {
+		t.Fatalf("kick came back %+v (%v)", k, err)
+	}
+
+	long := strings.Repeat("z", KickReasonLen*2)
+	b = EncodeKick(Kick{Reason: long})
+	if len(b) != HeaderSize+KickReasonLen {
+		t.Fatalf("long kick is %d bytes, want %d", len(b), HeaderSize+KickReasonLen)
+	}
+	k, err = DecodeKick(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(k.Reason) >= KickReasonLen {
+		t.Fatalf("reason came back %d bytes, must be NUL-terminated within %d",
+			len(k.Reason), KickReasonLen)
+	}
+}
+
+// The C++ client reads the snapshot with fixed offsets, so the exact byte
+// layout is the contract. Build the expected bytes by hand and compare.
+func TestSnapshotWireOffsets(t *testing.T) {
+	if EntitySize != 156 {
+		t.Fatalf("EntitySize is %d, want 156", EntitySize)
+	}
+	e := Entity{ID: 7, Flags: 0, Name: "n", Car: "c",
+		SampleTimeMs: 0x11223344, PingMs: 0xABCD}
+	b := EncodeSnapshot(Snapshot{
+		ServerTimeMs: 0x01020304, LastClientTimeMs: 0x05060708,
+		SelfPingMs: 0x1234, Entities: []Entity{e},
+	})
+	if want := HeaderSize + SnapshotHeaderSize + EntitySize; len(b) != want {
+		t.Fatalf("snapshot is %d bytes, want %d", len(b), want)
+	}
+	// Header: magic "ORMP", version 3, type 4.
+	if string(b[:4]) != "ORMP" || b[4] != 3 || b[5] != 0 || b[6] != 4 || b[7] != 0 {
+		t.Fatalf("header bytes are % x", b[:8])
+	}
+	// Snapshot header at 8: serverTime, lastClientTime, count, selfPing.
+	check := func(off int, want []byte, what string) {
+		t.Helper()
+		got := b[off : off+len(want)]
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s at offset %d is % x, want % x", what, off, got, want)
+			}
+		}
+	}
+	check(8, []byte{0x04, 0x03, 0x02, 0x01}, "server time")
+	check(12, []byte{0x08, 0x07, 0x06, 0x05}, "echoed client time")
+	check(16, []byte{0x01, 0x00}, "entity count")
+	check(18, []byte{0x34, 0x12}, "self ping")
+	// Entity starts at 20: id 0, flags 4, pad 6, name 8, car 32,
+	// transform 56, telemetry 104, sampleTime 148, ping 152, pad 154.
+	const eb = 20
+	check(eb+0, []byte{0x07, 0x00, 0x00, 0x00}, "entity id")
+	check(eb+8, []byte{'n', 0x00}, "entity name")
+	check(eb+32, []byte{'c', 0x00}, "entity car")
+	check(eb+148, []byte{0x44, 0x33, 0x22, 0x11}, "entity sample time")
+	check(eb+152, []byte{0xCD, 0xAB}, "entity ping")
+	check(eb+154, []byte{0x00, 0x00}, "entity tail padding")
+
+	out, err := DecodeSnapshot(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.SelfPingMs != 0x1234 || out.Entities[0].PingMs != 0xABCD {
+		t.Fatalf("pings came back %d/%d, want 0x1234/0xABCD",
+			out.SelfPingMs, out.Entities[0].PingMs)
+	}
+}
+
 func TestDecodeRejectsTruncatedState(t *testing.T) {
 	b := EncodeState(State{PlayerID: 1, Transform: sampleTransform()})
 	if _, err := DecodeState(b[:HeaderSize+4]); err == nil {

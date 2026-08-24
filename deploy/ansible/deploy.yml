@@ -22,6 +22,11 @@
     rbrmp_port: 40100
     # Every flag the binary takes; -addr is derived from rbrmp_port.
     rbrmp_flags: "-tick 30 -stats 60s"
+    # RCON admin console. Empty password = RCON disabled (the default).
+    # Set it with -e rbrmp_rcon_password=... or in a vaulted group_vars file;
+    # the unit binds RCON to localhost, so administrate over an SSH tunnel.
+    rbrmp_rcon_password: ""
+    rbrmp_rcon_addr: "127.0.0.1:40101"
     # Set false if the host has no ufw or the firewall is managed elsewhere.
     rbrmp_manage_ufw: true
     # Auto-update: a systemd timer checks GitHub Releases and swaps the binary

@@ -16,7 +16,7 @@ import (
 // at the start of every datagram.
 const (
 	Magic   uint32 = 0x504D524F
-	Version uint16 = 2
+	Version uint16 = 3
 )
 
 // Message types.
@@ -27,7 +27,14 @@ const (
 	TypeSnapshot uint16 = 4 // server -> client, every tick
 	TypeBye      uint16 = 5 // client -> server, on a clean disconnect
 	TypeChat     uint16 = 6 // client -> server a line of text; server -> everyone (sender included)
+	TypePing     uint16 = 7 // server -> client, carries an opaque token
+	TypePong     uint16 = 8 // client -> server, echoes the token verbatim
+	TypeKick     uint16 = 9 // server -> client, "you are gone, and this is why"
 )
+
+// KickReasonLen is the fixed size of a kick reason on the wire, NUL-padded.
+// Anything longer is truncated by the encoder.
+const KickReasonLen = 64
 
 // ChatTextLen is the fixed size of a chat line on the wire, NUL-padded.
 // Anything longer is truncated by the encoder.
@@ -137,10 +144,14 @@ type Entity struct {
 	// For an echo entity that is the receiving client's own clock, so
 	// now - SampleTimeMs is the exact end-to-end delay of the loop.
 	SampleTimeMs uint32
+	// PingMs is the server-measured round trip to this player, clamped to
+	// 65535. 0 = not yet measured. Followed by 2 bytes of zero padding on
+	// the wire, which keeps the entity array 4-byte aligned.
+	PingMs uint16
 }
 
 // EntitySize is the fixed on-the-wire size of one Entity.
-const EntitySize = 4 + 2 + 2 + NameLen + NameLen + 48 + TelemetrySize + 4
+const EntitySize = 4 + 2 + 2 + NameLen + NameLen + 48 + TelemetrySize + 4 + 2 + 2
 
 // Chat is one line of text. The same shape travels both ways: a client sends
 // it with its own id and whatever name it likes, the server overwrites both
@@ -162,7 +173,28 @@ type Snapshot struct {
 	// received from this client, echoed back. now - LastClientTimeMs is the
 	// round trip time, measured with one clock and no synchronisation.
 	LastClientTimeMs uint32
-	Entities         []Entity
+	// SelfPingMs is the receiving client's own server-measured round trip,
+	// clamped to 65535. 0 = not yet measured.
+	SelfPingMs uint16
+	Entities   []Entity
+}
+
+// Ping is sent by the server; the token is opaque to the client, which must
+// only echo it back in a Pong. The server uses its own monotonic clock, so
+// the round trip is measured with one clock and no synchronisation.
+type Ping struct {
+	Token uint32
+}
+
+// Pong answers a Ping, token verbatim.
+type Pong struct {
+	Token uint32
+}
+
+// Kick tells a client it has been removed and why. Fire-and-forget UDP: the
+// server sends it a few times and forgets the session either way.
+type Kick struct {
+	Reason string // KickReasonLen bytes on the wire, NUL-padded
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +442,67 @@ func DecodeChat(b []byte) (Chat, error) {
 	return c, r.err
 }
 
+// EncodePing builds a Ping datagram.
+func EncodePing(p Ping) []byte {
+	w := &writer{}
+	w.header(TypePing)
+	w.u32(p.Token)
+	return w.b
+}
+
+// DecodePing parses a Ping datagram.
+func DecodePing(b []byte) (Ping, error) {
+	r := &reader{b: b, i: HeaderSize}
+	p := Ping{Token: r.u32()}
+	return p, r.err
+}
+
+// EncodePong builds a Pong datagram.
+func EncodePong(p Pong) []byte {
+	w := &writer{}
+	w.header(TypePong)
+	w.u32(p.Token)
+	return w.b
+}
+
+// DecodePong parses a Pong datagram.
+func DecodePong(b []byte) (Pong, error) {
+	r := &reader{b: b, i: HeaderSize}
+	p := Pong{Token: r.u32()}
+	return p, r.err
+}
+
+// EncodeKick builds a Kick datagram.
+func EncodeKick(k Kick) []byte {
+	w := &writer{}
+	w.header(TypeKick)
+	var buf [KickReasonLen]byte
+	copy(buf[:], k.Reason) // truncates, and leaves the tail NUL
+	if len(k.Reason) >= KickReasonLen {
+		buf[KickReasonLen-1] = 0
+	}
+	w.b = append(w.b, buf[:]...)
+	return w.b
+}
+
+// DecodeKick parses a Kick datagram.
+func DecodeKick(b []byte) (Kick, error) {
+	r := &reader{b: b, i: HeaderSize}
+	if !r.need(KickReasonLen) {
+		return Kick{}, r.err
+	}
+	raw := r.b[r.i : r.i+KickReasonLen]
+	r.i += KickReasonLen
+	k := Kick{Reason: string(raw)}
+	for j, c := range raw {
+		if c == 0 {
+			k.Reason = string(raw[:j])
+			break
+		}
+	}
+	return k, r.err
+}
+
 // EncodeSnapshot builds a Snapshot datagram.
 func EncodeSnapshot(s Snapshot) []byte {
 	w := &writer{b: make([]byte, 0, HeaderSize+SnapshotHeaderSize+len(s.Entities)*EntitySize)}
@@ -417,7 +510,7 @@ func EncodeSnapshot(s Snapshot) []byte {
 	w.u32(s.ServerTimeMs)
 	w.u32(s.LastClientTimeMs)
 	w.u16(uint16(len(s.Entities)))
-	w.u16(0) // padding, keeps the entity array 4-byte aligned
+	w.u16(s.SelfPingMs)
 	for _, e := range s.Entities {
 		w.u32(e.ID)
 		w.u16(e.Flags)
@@ -427,6 +520,8 @@ func EncodeSnapshot(s Snapshot) []byte {
 		w.transform(e.Transform)
 		w.telemetry(e.Telemetry)
 		w.u32(e.SampleTimeMs)
+		w.u16(e.PingMs)
+		w.u16(0) // padding, keeps the entity array 4-byte aligned
 	}
 	return w.b
 }
@@ -439,7 +534,7 @@ func DecodeSnapshot(b []byte) (Snapshot, error) {
 		LastClientTimeMs: r.u32(),
 	}
 	n := int(r.u16())
-	_ = r.u16()
+	s.SelfPingMs = r.u16()
 	if r.err != nil {
 		return s, r.err
 	}
@@ -454,6 +549,8 @@ func DecodeSnapshot(b []byte) (Snapshot, error) {
 		e.Transform = r.transform()
 		e.Telemetry = r.telemetry()
 		e.SampleTimeMs = r.u32()
+		e.PingMs = r.u16()
+		_ = r.u16()
 		if r.err != nil {
 			return s, r.err
 		}
